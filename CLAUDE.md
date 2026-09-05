@@ -79,3 +79,36 @@ Kyverno, Rollouts, Prometheus agent, Alloy).
 **Never iterate against an Argo CD-managed namespace** — self-heal reverts it within
 seconds. Use the unmanaged `sandbox` namespace in `dev`. If self-heal is inconvenient, the
 answer is `sandbox`, never disabling self-heal.
+
+## Machine setup
+
+Two machines, one lab: **MacBook M1 (arm64)** — the runtime target — and **Windows 11 /
+WSL2 (amd64)**, which builds and tests but is too small to host the clusters.
+`docs/SETUP.md` is the pickup procedure. `docs/DECISIONS.md` records every delta from the
+build plan and why; append to it rather than editing the plan.
+
+- Repo root is `~/gitops-lab/` on **both** machines, all seven cloned side by side. On
+  Windows that is the WSL2 home, **never `/mnt/c/`**.
+- `scripts/bootstrap-toolchain.sh` owns host tool versions. That pin list is the single
+  source of truth — do not install k3d, helm, kubectl, or go any other way.
+- Run `./scripts/bootstrap-toolchain.sh --verify` before blaming anything else when the
+  two machines disagree. Drift is the first suspect.
+- Secrets come from 1Password via `scripts/get-secret.sh` on both machines. There is no
+  `uname` branch here and there should never be one.
+- **Helm is 4.x.** Argo CD ≥3.5 renders with Helm 4 only; rendering CI manifests with
+  Helm 3 reintroduces exactly the drift rendered manifests exist to remove.
+
+## Cross-platform, always
+
+Every change must work on `darwin/arm64` and `linux/amd64`.
+
+- **Pin the manifest-list (index) digest, never a per-arch digest.** A platform-specific
+  digest pulls fine on the machine you tested and fails `no match for platform` on the
+  other. This is the most likely portability bug in the whole lab.
+- Build own images for `linux/amd64,linux/arm64`.
+- Prefer plain shell and `docker` steps over marketplace actions — many ship amd64-only
+  binaries.
+- **LF endings**, enforced by `.gitattributes` in all seven repos. A CRLF `.sh` copied
+  into a Linux image dies as `bad interpreter: /bin/bash^M`.
+- No `uname` branching anywhere except `scripts/bootstrap-toolchain.sh`, which needs it
+  to choose a download URL.
