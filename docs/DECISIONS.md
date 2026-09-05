@@ -19,8 +19,9 @@ kube-prometheus-stack) go through Helm 4 regardless of what is installed locally
 Rendering CI manifests with Helm 3 while Argo CD renders with Helm 4 is exactly the
 drift the rendered-manifests design exists to eliminate.
 
-Helm 3 is also out of runway: bug fixes ended **2026-07-08**, security fixes end
-**2026-11-11**.
+Note that **helm.sh publishes no explicit Helm 3 end-of-life date**. Specific sunset
+dates circulating in third-party migration guides are not confirmed upstream and are
+not a basis for this decision. The Argo CD renderer is.
 
 **Why the breaking changes don't bite us.** Helm 4's breaking changes land on
 `--wait`, `--atomic`, `--force`, post-renderers, the plugin system, and the Go SDK.
@@ -28,6 +29,20 @@ This lab uses `helm template` in CI and Argo CD uses `helm template` at sync —
 Helm CLI never manages a release lifecycle here, because Argo CD does. The one place
 to stay alert is `helm registry login` path components when publishing
 `service-chart` as an OCI artifact.
+
+**Consequence for Phase 0 — the cluster version ceiling.** Helm 4 declares
+compatibility with `n-3` Kubernetes minors:
+
+| Helm | Supported Kubernetes |
+|---|---|
+| 4.2.x | 1.36.x – 1.33.x |
+| 4.1.x | 1.35.x – 1.32.x |
+| 4.0.x | 1.34.x – 1.31.x |
+
+So **k3d clusters must pin Kubernetes to 1.36.x**, not the 1.37.0 that is current
+stable — pass an explicit `--image rancher/k3s:v1.36.<patch>-k3s1` in Phase 0 rather
+than taking k3d's default. The pinned `kubectl` stays at **1.37.0**: the client is
+supported within ±1 minor of the server, so 1.37 against a 1.36 cluster is fine.
 
 **Revisit if:** the OCI publish flow in Phase 2 misbehaves.
 
@@ -60,7 +75,7 @@ its moving parts. Homebrew-on-Mac was rejected outright: brew resolves its own
 versions, which guarantees the two machines diverge.
 
 **Revisit if:** the script accumulates per-tool special cases the way
-`versions:check` is warned about in §3 — same ~150-line boundary applies.
+`versions:check` is warned about in §3 — the same ~150-line boundary applies.
 
 ---
 
