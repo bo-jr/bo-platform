@@ -1,6 +1,6 @@
 # platform
 
-Local three-cluster GitOps lab. Full spec: `docs/BUILD-PLAN.md` — **read the relevant
+Local three-cluster GitOps lab. Full spec: `BUILD-PLAN.md` — **read the relevant
 phase before writing anything.** This file is the standing rules only.
 
 ## How we work here
@@ -84,13 +84,18 @@ answer is `sandbox`, never disabling self-heal.
 
 Two machines, one lab: **MacBook M1 (arm64)** — the runtime target — and **Windows 11 /
 WSL2 (amd64)**, which builds and tests but is too small to host the clusters.
-`docs/SETUP.md` is the pickup procedure. `docs/DECISIONS.md` records every delta from the
+`SETUP.md` is the pickup procedure. `DECISIONS.md` records every delta from the
 build plan and why; append to it rather than editing the plan.
 
 - Repo root is `~/git/` on **both** machines, all seven cloned side by side. On
   Windows that is the WSL2 home, **never `/mnt/c/`**.
 - `scripts/bootstrap-toolchain.sh` owns host tool versions. That pin list is the single
-  source of truth — do not install k3d, helm, kubectl, or go any other way.
+  source of truth. **Homebrew installs them on macOS**, `curl` on WSL2 — but neither
+  chooses the version. Never `brew install` or `brew upgrade` one of the nine by hand.
+- **All nine are `brew pin`ned on macOS.** Homebrew has no versioned formulae for them,
+  so pinning is the only thing stopping a stray `brew upgrade` from moving helm off 4.2.4.
+  If brew's stable moves ahead of the pin list, `--verify` fails — update the pin list
+  deliberately, do not unpin to make the error go away.
 - Run `./scripts/bootstrap-toolchain.sh --verify` before blaming anything else when the
   two machines disagree. Drift is the first suspect.
 - Secrets come from 1Password via `scripts/get-secret.sh` on both machines. There is no

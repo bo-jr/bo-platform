@@ -14,9 +14,9 @@ set -euo pipefail
 # ---- pin list: the single source of truth for host tools --------------------
 K3D=v5.9.0
 KUBECTL=v1.37.0
-HELM=v4.2.4          # Argo CD >=3.5 renders with Helm 4 ONLY — see docs/DECISIONS.md
+HELM=v4.2.4          # Argo CD >=3.5 renders with Helm 4 ONLY — see DECISIONS.md
 TASK=v3.53.1
-D2=v0.8.2
+D2=v0.9.0           # follows Homebrew stable — see DECISIONS.md
 COSIGN=v3.1.3
 JQ=jq-1.8.2
 GH=v2.100.0
@@ -80,6 +80,41 @@ if [ "${1:-}" = "--verify" ]; then
   exit $rc
 fi
 
+# ---- macOS: Homebrew is the installer, the pin list is still the authority ----
+# Homebrew has no versioned formulae for these and cannot install a chosen
+# version, so it is used to INSTALL and `brew pin` is used to FREEZE. The pin
+# list above remains the source of truth: if brew's stable moves ahead, the
+# verify pass at the end fails loudly and the pin list is updated deliberately,
+# rather than the machine drifting silently.
+if [ "$OS" = darwin ]; then
+  command -v brew >/dev/null 2>&1 || { echo "Homebrew required on macOS: https://brew.sh" >&2; exit 1; }
+
+  formula() { # our tool name -> Homebrew formula name
+    case "$1" in
+      kubectl) echo kubernetes-cli ;;
+      task)    echo go-task        ;;
+      *)       echo "$1"           ;;
+    esac
+  }
+
+  echo ">> installing pinned toolchain for darwin/${ARCH} via Homebrew"
+  for t in k3d kubectl helm task d2 cosign jq gh go; do
+    f=$(formula "$t")
+    if brew list --versions "$f" >/dev/null 2>&1; then
+      echo ">> $t ($f) already installed"
+    else
+      echo ">> $t ($f)"
+      brew install "$f" >/dev/null
+    fi
+    brew pin "$f" >/dev/null 2>&1 || true
+  done
+
+  echo ">> pinned in Homebrew: $(brew list --pinned | tr '\n' ' ')"
+  echo ">> verifying against the pin list"
+  exec "$0" --verify
+fi
+
+# ---- Linux (WSL2): no Homebrew, download each pinned release directly --------
 echo ">> installing pinned toolchain for ${OS}/${ARCH} into ${BIN}"
 mkdir -p "$BIN"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT

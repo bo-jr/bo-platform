@@ -14,9 +14,9 @@ Everything else is scaffolding for that.
 
 | | |
 |---|---|
-| [`docs/SETUP.md`](docs/SETUP.md) | **Setting up a machine — start here.** Also carries the honest build status. |
-| [`docs/BUILD-PLAN.md`](docs/BUILD-PLAN.md) | The spec: locked decisions, phase boundaries, acceptance criteria |
-| [`docs/DECISIONS.md`](docs/DECISIONS.md) | Deltas from the plan, and why |
+| [`SETUP.md`](SETUP.md) | **Setting up a machine — start here.** Also carries the honest build status. |
+| [`BUILD-PLAN.md`](BUILD-PLAN.md) | The spec: locked decisions, phase boundaries, acceptance criteria |
+| [`DECISIONS.md`](DECISIONS.md) | Deltas from the plan, and why |
 | [`CLAUDE.md`](CLAUDE.md) | Standing working rules |
 
 ```bash
@@ -53,4 +53,4 @@ the root app-of-apps.
 
 ## Status
 
-Phase 0 not started — no clusters exist yet. See [`docs/SETUP.md`](docs/SETUP.md).
+Phase 0 not started — no clusters exist yet. See [`SETUP.md`](SETUP.md).

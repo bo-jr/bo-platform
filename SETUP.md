@@ -1,6 +1,6 @@
 # Picking this up on a new machine
 
-Read `CLAUDE.md` for the standing rules and `docs/BUILD-PLAN.md` for the spec.
+Read `CLAUDE.md` for the standing rules and `BUILD-PLAN.md` for the spec.
 This file is the mechanical setup, and the honest status of where the build is.
 
 ---
@@ -27,7 +27,7 @@ prerequisite: the Docker Hub pull-through cache needs `dockerhub-user` and
 
 **The Windows box cannot host the lab.** 31GB host, WSL2 capped at 8GB by choice.
 It builds, tests, and authors CI. The MacBook M1 (64GB) is the runtime target —
-see `docs/DECISIONS.md`.
+see `DECISIONS.md`.
 
 ---
 
@@ -107,8 +107,20 @@ The flat side-by-side layout is required by `go.work` (BUILD-PLAN §4), which sp
 cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
-Detects `darwin/arm64` vs `linux/amd64` and installs to `~/.local/bin`. Open a new
-shell, then confirm both machines agree:
+Detects the host and installs the nine pinned tools two different ways:
+
+| | Installer | Location | Frozen by |
+|---|---|---|---|
+| **macOS** | Homebrew | `/opt/homebrew/bin` | `brew pin` |
+| **WSL2** | `curl` from each release | `~/.local/bin` | the URL itself |
+
+The pin list at the top of the script is the authority on **both**. Homebrew is only
+the installer — it has no versioned formulae for these tools and cannot install a
+chosen version, so `brew pin` is what actually holds them still. On macOS the script
+finishes by running `--verify` on itself, so a brew stable that has moved ahead of the
+pin list fails loudly instead of drifting quietly.
+
+Open a new shell, then confirm both machines agree:
 
 ```bash
 ./scripts/bootstrap-toolchain.sh --verify
@@ -116,6 +128,10 @@ shell, then confirm both machines agree:
 
 Every line must say `ok`. A `DRIFT` line is the first thing to suspect when
 something behaves differently on one machine than the other.
+
+> If `--verify` reports drift on macOS after a `brew upgrade`, the fix is to decide
+> whether the new version is wanted and edit the pin list — **not** `brew unpin`. The
+> two machines have to agree, and the WSL2 box installs by exact URL.
 
 ---
 

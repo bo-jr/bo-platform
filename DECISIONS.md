@@ -1,6 +1,6 @@
 # Decisions log
 
-Deltas from `docs/BUILD-PLAN.md` and answers to questions the plan left open.
+Deltas from `BUILD-PLAN.md` and answers to questions the plan left open.
 The plan is the spec; this file records where reality forced a choice and why.
 **Append, never rewrite.** If a decision is reversed, add a new entry saying so.
 
@@ -218,3 +218,59 @@ installed and currently happen to match the pin list. `~/.local/bin` precedes
 `/opt/homebrew/bin` on PATH so the pins win, but a future `brew upgrade` would make the
 two disagree with nothing reporting it. `brew uninstall k3d helm kubernetes-cli` would
 close it.
+
+---
+
+## 2026-09-07 — Homebrew installs the toolchain on macOS; the pin list still rules
+
+**Decision.** Amends the 2026-09-05 entry that chose a script over a version manager.
+On macOS the nine host tools are installed by **Homebrew** and frozen with **`brew pin`**.
+WSL2 is unchanged: `curl` from each pinned release URL into `~/.local/bin`. The pin list
+at the top of `scripts/bootstrap-toolchain.sh` remains the single source of truth on both.
+
+**Why.** Operator preference for brew-managed installs over hand-placed binaries. The
+2026-09-05 entry's actual requirement was never "must be a script" — it was that both
+machines run identical, declared versions and that drift is *detectable*. Brew as the
+installer does not threaten that; brew as the *authority* would.
+
+**How the pin survives.** Homebrew has no versioned formulae for these tools — there is
+no `helm@4.2.4`, only `helm@3`, a different major — so brew cannot install a chosen
+version. Two things close that gap:
+
+1. `brew pin` on all nine, so `brew upgrade` cannot move them.
+2. The macOS branch of the script ends with `exec "$0" --verify`. If brew's stable has
+   moved ahead of the pin list, installation fails loudly rather than silently handing
+   you a different version. The remedy is to update the pin list deliberately — never
+   `brew unpin`, because the WSL2 box installs by exact URL and the two must agree.
+
+**Cost, stated honestly.** Re-converging a drifted machine onto an *older* pinned version
+is no longer a one-command operation on macOS; brew can only move forward. If that ever
+bites, the answer is to move that tool back to the curl path, not to abandon the pin list.
+
+**Version change.** `D2` moves `v0.8.2` → `v0.9.0`, the only one of the nine where brew's
+stable differed from the pin. Chosen over holding 0.8.2 because d2 is not yet used
+anywhere — Phase 8b is the first consumer — so there is nothing to regress.
+
+**Consequence.** `~/.local/bin` no longer holds any of the nine on macOS, and the PATH
+line the script had appended to `.zshrc` was removed, restoring the original file.
+`~/.local/bin` still holds unrelated tools (`claude`, `lsd`, `webi`) and was left in place.
+
+---
+
+## 2026-09-07 — Repo docs live in the repo root, not `docs/`
+
+**Decision.** `BUILD-PLAN.md`, `DECISIONS.md` and `SETUP.md` moved from `docs/` to the
+repo root, joining `README.md` and `CLAUDE.md`. The `docs/` directory was removed.
+
+**Why.** Operator preference; explicitly provisional — "keep all the repo docs in the
+root of the repo for now, we can optimize them later."
+
+**Not changed.** BUILD-PLAN §4 and Phase 8b still specify `docs/architecture.d2` and
+`docs/architecture.svg`. Those are a generated diagram that does not exist yet, they are
+part of the spec rather than of this move, and the plan is not edited from here — see
+the header of this file. `docs/` will therefore reappear at Phase 8b holding only the
+diagram. Revisit then.
+
+**Also not changed.** Two earlier entries in this file mention `docs/SETUP.md` in prose.
+That was the accurate path when they were written and this log is append-only, so they
+stand as written.

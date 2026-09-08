@@ -7,7 +7,7 @@
 #
 #   ./scripts/get-secret.sh <item>     -> prints the credential to stdout
 #
-# Items expected in the vault (see docs/SETUP.md):
+# Items expected in the vault (see SETUP.md):
 #   argocd-git-credential   PAT Argo CD uses to read bo-deploy
 #   promoter-github-pat     fine-grained PAT for cmd/promoter (contents+PRs)
 #   dockerhub-user          Docker Hub username for the pull-through cache
