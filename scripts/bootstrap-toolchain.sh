@@ -31,9 +31,13 @@ case "$(uname -m)" in
   aarch64|arm64)  ARCH=arm64 ;;
   *) echo "unsupported arch: $(uname -m)" >&2; exit 1 ;;
 esac
+# Three projects do not call macOS "darwin" in their release asset names, so the
+# OS token is not universal. jq and d2 use "macos"; gh uses "macOS" and ships a
+# .zip instead of a .tar.gz. On Linux all four variables collapse to the same
+# value, which is why this only ever broke on the MacBook.
 case "$(uname -s)" in
-  Linux)  OS=linux  ;;
-  Darwin) OS=darwin ;;
+  Linux)  OS=linux;  OS_ALT=linux; GH_OS=linux; GH_EXT=tar.gz ;;
+  Darwin) OS=darwin; OS_ALT=macos; GH_OS=macOS; GH_EXT=zip    ;;
   *) echo "unsupported os: $(uname -s)" >&2; exit 1 ;;
 esac
 
@@ -51,7 +55,8 @@ have() { # tool -> installed version string, normalised
     k3d)     k3d version 2>/dev/null | sed -n 's/.*k3d version v\([0-9.]*\).*/\1/p' | head -1 ;;
     kubectl) kubectl version --client 2>/dev/null | sed -n 's/^Client Version: v\([0-9.]*\).*/\1/p' ;;
     helm)    helm version --short 2>/dev/null | sed -n 's/^v\([0-9.]*\).*/\1/p' ;;
-    task)    task --version 2>/dev/null | sed -n 's/.*\([0-9]\+\.[0-9]\+\.[0-9]\+\).*/\1/p' ;;
+    # sed -E, not \+ : BSD sed (macOS) has no \+ in BRE and silently matches nothing.
+    task)    task --version 2>/dev/null | sed -E -n 's/.*([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' ;;
     d2)      d2 --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9.]*\).*/\1/p' ;;
     cosign)  cosign version 2>/dev/null | sed -n 's/.*GitVersion: *v\([0-9.]*\).*/\1/p' ;;
     jq)      jq --version 2>/dev/null | sed -n 's/^jq-\([0-9.]*\).*/\1/p' ;;
@@ -90,7 +95,7 @@ echo ">> cosign ${COSIGN}"
 get "https://github.com/sigstore/cosign/releases/download/${COSIGN}/cosign-${OS}-${ARCH}" "$BIN/cosign"; chmod +x "$BIN/cosign"
 
 echo ">> jq ${JQ}"
-get "https://github.com/jqlang/jq/releases/download/${JQ}/jq-${OS}-${ARCH}" "$BIN/jq"; chmod +x "$BIN/jq"
+get "https://github.com/jqlang/jq/releases/download/${JQ}/jq-${OS_ALT}-${ARCH}" "$BIN/jq"; chmod +x "$BIN/jq"
 
 echo ">> helm ${HELM}"
 get "https://get.helm.sh/helm-${HELM}-${OS}-${ARCH}.tar.gz" "$TMP/helm.tgz"
@@ -101,12 +106,18 @@ get "https://github.com/go-task/task/releases/download/${TASK}/task_${OS}_${ARCH
 mkdir -p "$TMP/task"; tar -xzf "$TMP/task.tgz" -C "$TMP/task"; mv "$TMP/task/task" "$BIN/task"
 
 echo ">> d2 ${D2}"
-get "https://github.com/terrastruct/d2/releases/download/${D2}/d2-${D2}-${OS}-${ARCH}.tar.gz" "$TMP/d2.tgz"
+get "https://github.com/terrastruct/d2/releases/download/${D2}/d2-${D2}-${OS_ALT}-${ARCH}.tar.gz" "$TMP/d2.tgz"
 mkdir -p "$TMP/d2"; tar -xzf "$TMP/d2.tgz" -C "$TMP/d2" --strip-components=1; mv "$TMP/d2/bin/d2" "$BIN/d2"
 
 echo ">> gh ${GH}"
-get "https://github.com/cli/cli/releases/download/${GH}/gh_${GH#v}_${OS}_${ARCH}.tar.gz" "$TMP/gh.tgz"
-mkdir -p "$TMP/gh"; tar -xzf "$TMP/gh.tgz" -C "$TMP/gh" --strip-components=1; mv "$TMP/gh/bin/gh" "$BIN/gh"
+GH_DIR="gh_${GH#v}_${GH_OS}_${ARCH}"
+get "https://github.com/cli/cli/releases/download/${GH}/${GH_DIR}.${GH_EXT}" "$TMP/gh.${GH_EXT}"
+mkdir -p "$TMP/gh"
+if [ "$GH_EXT" = zip ]; then
+  unzip -q "$TMP/gh.zip" -d "$TMP/gh"; mv "$TMP/gh/${GH_DIR}/bin/gh" "$BIN/gh"
+else
+  tar -xzf "$TMP/gh.tar.gz" -C "$TMP/gh" --strip-components=1; mv "$TMP/gh/bin/gh" "$BIN/gh"
+fi
 
 echo ">> go ${GO}"
 get "https://go.dev/dl/${GO}.${OS}-${ARCH}.tar.gz" "$TMP/go.tgz"
@@ -114,7 +125,11 @@ rm -rf "$GOROOT_LOCAL"; tar -xzf "$TMP/go.tgz" -C "$HOME/.local"
 
 for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
   [ -f "$rc" ] || continue
-  grep -q '.local/bin' "$rc" || printf '\nexport PATH="$HOME/.local/bin:$HOME/.local/go/bin:$PATH"\n' >> "$rc"
+  # -F is load-bearing: as a regex the leading dot matches any character, so
+  # '.local/bin' matches '/usr/local/bin' — present, usually commented out, in
+  # almost every stock rc file. The guard then skips the append and every tool
+  # silently resolves to whatever Homebrew or apt put on PATH instead.
+  grep -qF '.local/bin' "$rc" || printf '\nexport PATH="$HOME/.local/bin:$HOME/.local/go/bin:$PATH"\n' >> "$rc"
 done
 
 echo ">> done — open a new shell, then: ./scripts/bootstrap-toolchain.sh --verify"

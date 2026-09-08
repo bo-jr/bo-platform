@@ -20,8 +20,8 @@ Everything else is scaffolding for that.
 | [`CLAUDE.md`](CLAUDE.md) | Standing working rules |
 
 ```bash
-git clone https://github.com/bo-jr/bo-platform.git ~/gitops-lab/bo-platform
-cd ~/gitops-lab/bo-platform && ./scripts/bootstrap-toolchain.sh
+git clone https://github.com/bo-jr/bo-platform.git ~/git/bo-platform
+cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
 Runs unmodified on `darwin/arm64` and `linux/amd64`.

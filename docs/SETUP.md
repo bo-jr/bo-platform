@@ -5,7 +5,7 @@ This file is the mechanical setup, and the honest status of where the build is.
 
 ---
 
-## Status — last updated 2026-09-05
+## Status — last updated 2026-09-07
 
 **Phase 0 has not started.** No clusters exist on any machine.
 
@@ -15,12 +15,15 @@ This file is the mechanical setup, and the honest status of where the build is.
 | Branch protection | ❌ not applied — needs `task repos:protect`, which needs the Taskfile |
 | Taskfile | ❌ not written |
 | Toolchain (Windows/WSL2) | ✅ installed and verified |
-| Toolchain (MacBook M1) | ❌ not installed |
+| Toolchain (MacBook M1) | ✅ installed and verified — all nine `ok` |
+| Container runtime (MacBook M1) | ✅ Docker Desktop 4.89.0, engine 29.7.2, 36 GiB / 100 GiB |
 | 1Password vault | ❌ not created |
 | Clusters, registry, caches | ❌ Phase 0 |
 
 **Next action:** Phase 0 on the MacBook — registry, four pull-through caches,
-three k3d clusters. See BUILD-PLAN §5.
+three k3d clusters. See BUILD-PLAN §5. The 1Password vault (§5 below) is a
+prerequisite: the Docker Hub pull-through cache needs `dockerhub-user` and
+`dockerhub-token` at creation time.
 
 **The Windows box cannot host the lab.** 31GB host, WSL2 capped at 8GB by choice.
 It builds, tests, and authors CI. The MacBook M1 (64GB) is the runtime target —
@@ -30,8 +33,29 @@ see `docs/DECISIONS.md`.
 
 ## 1. Container runtime
 
-**macOS (M1)** — OrbStack preferred, allocate **36GB** to the VM.
-Docker Desktop or Colima also work.
+**macOS (M1)** — **Docker Desktop 4.89.0**, engine 29.7.2, `linux/arm64`. OrbStack
+and Colima also work; Docker Desktop is what is installed.
+
+Its defaults are far too small for three clusters — **8 GiB RAM and a 59.6 GiB disk**,
+against a ≤20GB steady state plus three separate containerd image stores. Set both in
+Settings → Resources → Advanced:
+
+| | Default | This lab |
+|---|---|---|
+| Memory | 8 GiB | **36 GiB** |
+| Disk | 59.6 GiB | **100 GiB** |
+| Swap | 2 GiB | 4 GiB |
+
+Equivalent from the CLI — Docker Desktop must be **stopped** first, and it reads
+`settings-store.json`, not the `settings.json` beside it (that one is a leftover from
+older versions and is ignored):
+
+```bash
+docker desktop stop && jq '.MemoryMiB=36864 | .DiskSizeMiB=102400 | .SwapMiB=4096' ~/Library/Group\ Containers/group.com.docker/settings-store.json > /tmp/s.json && mv /tmp/s.json ~/Library/Group\ Containers/group.com.docker/settings-store.json && docker desktop start
+```
+
+> First boot after installing Docker Desktop takes a few minutes and gives no progress
+> indication. It is not hung. `docker desktop status` reports when the engine is up.
 
 **Windows 11** — Docker Desktop with the **WSL2 backend**. Not Hyper-V, not Windows
 containers. Enable WSL integration for the Ubuntu distro. Memory is set in
@@ -60,12 +84,12 @@ On Windows this must be run **inside WSL2**, not from PowerShell.
 
 ## 2. Clone all seven repos side by side
 
-Repo root is `~/gitops-lab/` on both machines. On Windows that means the WSL2
+Repo root is `~/git/` on both machines. On Windows that means the WSL2
 home directory — **never `/mnt/c/`**, which mangles script permissions and is an
 order of magnitude slower.
 
 ```bash
-mkdir -p ~/gitops-lab && cd ~/gitops-lab
+mkdir -p ~/git && cd ~/git
 for r in bo-platform bo-deploy bo-service-chart bo-service-kit \
          bo-storefront bo-catalog bo-pricing; do
   git clone "https://github.com/bo-jr/$r.git"
@@ -80,7 +104,7 @@ The flat side-by-side layout is required by `go.work` (BUILD-PLAN §4), which sp
 ## 3. Install the pinned toolchain
 
 ```bash
-cd ~/gitops-lab/bo-platform && ./scripts/bootstrap-toolchain.sh
+cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
 Detects `darwin/arm64` vs `linux/amd64` and installs to `~/.local/bin`. Open a new

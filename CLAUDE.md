@@ -87,7 +87,7 @@ WSL2 (amd64)**, which builds and tests but is too small to host the clusters.
 `docs/SETUP.md` is the pickup procedure. `docs/DECISIONS.md` records every delta from the
 build plan and why; append to it rather than editing the plan.
 
-- Repo root is `~/gitops-lab/` on **both** machines, all seven cloned side by side. On
+- Repo root is `~/git/` on **both** machines, all seven cloned side by side. On
   Windows that is the WSL2 home, **never `/mnt/c/`**.
 - `scripts/bootstrap-toolchain.sh` owns host tool versions. That pin list is the single
   source of truth — do not install k3d, helm, kubectl, or go any other way.

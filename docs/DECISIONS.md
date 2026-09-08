@@ -103,3 +103,118 @@ Tempo, Kiali, OpenBao and CNPG will not fit in 8GB — not tightly, not at all.
 **Consequence.** Cross-platform correctness cannot be verified by running the lab on
 both machines. It is enforced instead by: one pinned toolchain, manifest-list index
 digests (never per-arch), `linux/amd64,linux/arm64` builds, and LF line endings.
+
+---
+
+## 2026-09-07 — Repo root is `~/git/`, superseding `~/gitops-lab/`
+
+**Decision.** Reverses the `~/gitops-lab/` entry of 2026-09-05. All seven repos are
+cloned side by side under `~/git/` on both machines — WSL2 home on Windows, `$HOME` on
+macOS. Never `/mnt/c/`.
+
+**Why.** Operator preference; `~/git/` is where every other checkout on the MacBook
+already lives. The original entry's reasoning was never about the *name* — it was that
+`go.work` (BUILD-PLAN §4) spans all checkouts and only resolves identically if the
+parent directory is the same shape on both machines. `~/git/` satisfies that exactly as
+well as `~/gitops-lab/` did. The `/mnt/c/` prohibition is unaffected and still stands.
+
+**Consequence.** `README.md`, `docs/SETUP.md` and `CLAUDE.md` updated. The Docker
+network is still named `gitops-lab` — that name was never tied to the directory, and
+BUILD-PLAN §3 requires it.
+
+---
+
+## 2026-09-07 — argocd-agent adopted at Phase 9b, not Phase 1
+
+**Decision.** `argocd-agent` (argoproj-labs) enters the plan as **Phase 9b**, after
+Phases 0–8 pass. The lab is built first on classical hub-and-spoke — Argo CD in `mgmt`,
+spokes registered with `argocd cluster add` — and the multi-cluster model is swapped
+afterwards.
+
+**Verified before deciding**, against upstream rather than from memory:
+
+| | |
+|---|---|
+| Version | v0.10.0 (2026-08-26), pre-1.0, active |
+| Image | `quay.io/argoprojlabs/argocd-agent:v0.10.0` — OCI index, `linux/arm64` + `linux/amd64` |
+| Index digest | `sha256:ec9baba6e81555bfa5ce1fa6252f06c6100b56ae7f85273ba2f7e2309303800d` |
+| Charts | `oci://ghcr.io/argoproj-labs/argocd-agent/argocd-agent-principal` 0.3.3, `…/argocd-agent-agent` 0.2.7 |
+
+Charts lag the app (chart appVersion `v0.8.1` vs image `v0.10.0`), so `image.tag` must be
+pinned explicitly by index digest rather than inherited from `appVersion`.
+
+**Why not Phase 1.** Three reasons, in order of weight:
+
+1. **It inverts "bootstrap installs exactly one thing."** The control plane must *not*
+   run an application controller (upstream: explicitly unsupported), and every spoke needs
+   `application-controller` + `repo-server` + `redis` + `agent` running *before* git can
+   deliver anything to it. Bootstrap goes from one component on one cluster to a stack on
+   three, plus a CA, a principal server certificate, and a client certificate per agent.
+   `argocd-agentctl` issues them but is upstream-labelled "highly experimental, under no
+   circumstances for production." `scripts/lint-bootstrap.sh` does not survive that.
+   Worse: this repo's delivery model is a root app-of-apps in `mgmt`, which needs an
+   app-controller on the hub, which needs the upstream **hybrid architecture** — hub
+   app-controller plus a Redis proxy in front of `argocd-server`.
+2. **It costs memory rather than saving it.** At three clusters the pull model saves
+   nothing — the hub watching two local k3d clusters over a shared Docker network is
+   free. Adds the principal (chart default is 2 CPU / 4Gi limits — must be capped) plus a
+   full app-controller/repo-server/redis per spoke. Estimate +1.5–2.5GB against a ≤20GB
+   steady state.
+3. **It buys nothing toward the milestone.** The abort-on-burn-rate sequence
+   (BUILD-PLAN §1) happens entirely inside the spoke. argocd-agent changes nothing about
+   Rollouts, Pyrra, the AnalysisTemplate, or Istio.
+
+**Why still adopt it.** Same reasoning the plan already applies to Kargo in Phase 9:
+build the thing you understand, then replace it and write down the comparison — the
+comparison is the deliverable, not the install. It also removes the Phase 1 gotcha
+(k3d writes `https://0.0.0.0:<port>` into the kubeconfig and `argocd cluster add` reads
+it) by removing hub→spoke connections altogether.
+
+**Locked for when it lands.** Managed mode, **destination-based mapping** — this
+preserves the matrix ApplicationSet of Phase 1, since a cluster generator emits one
+Application per registered agent routed by `spec.destination.name`. Namespace-based
+mapping caps each ApplicationSet at a single agent and is therefore ruled out.
+Spoke-local `repo-server` and `redis`, never the hub's: sharing them makes `mgmt` a SPoF
+and breaks `task pause`.
+
+**Consequence.** `lint-bootstrap.sh` will need a second permitted install with the reason
+written into the script. Phase 9 and Phase 9b are independent swaps and may be done in
+either order.
+
+---
+
+## 2026-09-07 — `bootstrap-toolchain.sh` had three macOS-only bugs
+
+**Decision.** Fixed in place; pin list unchanged. All nine pinned versions existed and
+were correct — every failure was in URL construction or output parsing.
+
+**What was wrong.** The script had only ever run on WSL2/Linux, where all three collapse
+to the working case:
+
+1. **Asset naming.** jq and d2 call macOS `macos`, not `darwin`; `gh` calls it `macOS`
+   *and* ships a `.zip` instead of a `.tar.gz`. Three 404s. Fixed with `OS_ALT`, `GH_OS`
+   and `GH_EXT`, which are identical to `OS` on Linux.
+2. **BSD vs GNU sed.** The `task` version parser used `\+`, which GNU sed accepts and BSD
+   sed silently matches nothing with — so `task` reported `installed=unknown` forever.
+   Now `sed -E`, valid on both.
+3. **The PATH guard, the worst of the three.** `grep -q '.local/bin' "$rc"` treated the
+   leading dot as *any character*, so it matched `/usr/local/bin` — present, commented
+   out, in the stock `.zshrc`. The guard concluded PATH was already configured and skipped
+   the append. Every tool then silently resolved to Homebrew's copy instead of the pinned
+   one, which is the exact drift `--verify` exists to catch, arriving through the script
+   meant to prevent it. Now `grep -qF`.
+
+**Why it matters beyond this script.** All three are the same failure shape: something
+that is correct on `linux/amd64` and quietly wrong on `darwin/arm64`, with no error. That
+is the class of bug CLAUDE.md's cross-platform rules exist for, and it is worth
+remembering that it reached the toolchain layer before it ever reached a manifest.
+
+**Also fixed.** Both scripts were committed `100644`, so `./scripts/bootstrap-toolchain.sh`
+failed with `permission denied` on a fresh clone — exactly as `docs/SETUP.md` tells you to
+invoke it. Now `100755` via `git update-index --chmod=+x`.
+
+**Open, not blocking.** Homebrew copies of `k3d`, `kubectl`, `helm`, `gh` and `go` remain
+installed and currently happen to match the pin list. `~/.local/bin` precedes
+`/opt/homebrew/bin` on PATH so the pins win, but a future `brew upgrade` would make the
+two disagree with nothing reporting it. `brew uninstall k3d helm kubernetes-cli` would
+close it.
