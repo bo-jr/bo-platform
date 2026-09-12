@@ -1,0 +1,85 @@
+# Argo CD — bootstrap values.
+#
+# This is the ONE component not delivered by GitOps, because it is the thing
+# that delivers everything else. It is installed by scripts/bootstrap.sh with
+# `helm upgrade --install`, pinned to an exact chart version.
+#
+# Every component below carries explicit requests and limits. Installing this
+# chart at defaults is forbidden (CLAUDE.md) and would also be reckless here:
+# mgmt still has to fit Prometheus, Grafana, Loki, Tempo, Kiali, Pyrra and
+# OpenBao inside the same budget. Total requests here are ~700m CPU / 1.2Gi.
+
+global:
+  image:
+    repository: quay.io/argoproj/argocd
+    # Left to the chart's appVersion (v3.5.2 at chart 10.9.0) ON PURPOSE.
+    #
+    # This chart composes images as `repository:tag` and appends the tag
+    # unconditionally, so a digest cannot be expressed: setting
+    # repository=...@sha256:... renders `repo@sha256:...:v3.5.2`, which is not a
+    # valid reference. The pin is therefore the CHART version, which selects the
+    # app version. See DECISIONS.md.
+    tag: ""
+    imagePullPolicy: IfNotPresent
+
+# No SSO in this lab (BUILD-PLAN: multi-tenancy/SSO explicitly out of scope),
+# so dex is dead weight — roughly 60Mi for a login path nothing uses.
+dex:
+  enabled: false
+
+configs:
+  params:
+    # Terminate TLS at the port-forward rather than in argocd-server. Without
+    # this the server 301s to HTTPS and `kubectl port-forward` sessions get a
+    # redirect loop. There is no ingress in front of it in this lab.
+    server.insecure: true
+    # One repo-server process is plenty for a handful of Applications, and each
+    # extra parallelism unit costs memory.
+    reposerver.parallelism.limit: 4
+
+  cm:
+    # Argo CD needs no git credential here: all seven repos are public and
+    # anonymous read works. See DECISIONS.md.
+    timeout.reconciliation: 60s
+
+controller:
+  # The application controller is the memory-hungry component — it caches the
+  # resource tree of every managed cluster. Three small clusters is modest, but
+  # this is the one to raise first if reconciliation gets slow.
+  resources:
+    requests: { cpu: 250m, memory: 512Mi }
+    limits:   { cpu: "1",  memory: 1Gi }
+
+server:
+  resources:
+    requests: { cpu: 50m,  memory: 128Mi }
+    limits:   { cpu: 300m, memory: 256Mi }
+
+repoServer:
+  # Renders the platform charts (Istio, kube-prometheus-stack) at sync time.
+  # Those are large templates, hence more memory than the API server.
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+applicationSet:
+  # Required: the platform ApplicationSet uses a matrix generator (cluster x git
+  # files), which is what makes dev a real environment rather than decoration.
+  enabled: true
+  resources:
+    requests: { cpu: 50m,  memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+
+notifications:
+  # Bundled since Argo CD 2.6, so this is config rather than an install.
+  # Configured in Phase 4 to post to Discord #deploys. Observation only —
+  # nothing in this system may depend on a notification firing.
+  enabled: true
+  resources:
+    requests: { cpu: 25m,  memory: 64Mi }
+    limits:   { cpu: 100m, memory: 128Mi }
+
+redis:
+  resources:
+    requests: { cpu: 50m,  memory: 128Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
