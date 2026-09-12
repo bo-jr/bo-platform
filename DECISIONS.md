@@ -361,3 +361,47 @@ make `require_last_push_approval: true` meaningful.
 **Not applied yet.** The ruleset has been written but deliberately not pushed to GitHub —
 that is an outward-facing change to seven live repos and wants an explicit go-ahead.
 `task repos:protect:show` reports the current state (all seven at 0 rulesets).
+
+---
+
+## 2026-09-12 — Docker Hub anonymous limit is 100/hr, not 10/hr
+
+**Correction, not a decision.** BUILD-PLAN §5 states unauthenticated Docker Hub pulls are
+"limited to roughly 10/hour per IP" and builds the case for mandatory pull-through caches
+on that number. Measured from this machine on 2026-09-12:
+
+```
+x-ratelimit-limit:       100;w=3600
+x-ratelimit-remaining:    99;w=3600
+docker-ratelimit-source: <this IP>   → IP-based, i.e. anonymous
+```
+
+**100 pulls/hour anonymous.** The 10/hr figure is stale. Use `HEAD` to check, since a
+`GET` on a manifest counts as a pull and a `HEAD` does not:
+
+```bash
+TOK=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | jq -r .token)
+curl -s -I -H "Authorization: Bearer $TOK" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit
+```
+
+**The caches stay mandatory anyway, for a better reason than the plan gives.** Measured
+during Phase 0: rebuilding `dev` took 27s and moved `ratelimit-remaining` by **zero** —
+the cache served every layer and Docker Hub was never contacted. That is the property
+worth having. Phase 8 requires two consecutive full rebuilds inside 20 minutes, and the
+binding constraint there is latency, not a quota.
+
+**Also worth knowing:** the lab's Docker Hub surface is much smaller than it looks,
+because BUILD-PLAN §5 deliberately sources most components elsewhere. Read out of the
+k3s binary rather than guessed, a cluster pulls exactly:
+
+```
+rancher/mirrored-pause              rancher/local-path-provisioner
+rancher/mirrored-coredns-coredns    rancher/klipper-lb
+rancher/mirrored-metrics-server     rancher/mirrored-library-busybox
+```
+
+plus `rancher/k3s` and `library/registry`, which are pulled by the **host Docker daemon**,
+not by cluster containerd — the two stores are separate, so pre-pulling those on the host
+helps while pre-pulling the others does not. The only remaining Docker Hub images are the
+Grafana stack in Phase 4 (`grafana/{grafana,loki,tempo,alloy,k6}`). Everything else comes
+from quay.io, ghcr.io, registry.k8s.io or gcr.io.
