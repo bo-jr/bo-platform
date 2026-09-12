@@ -274,3 +274,90 @@ diagram. Revisit then.
 **Also not changed.** Two earlier entries in this file mention `docs/SETUP.md` in prose.
 That was the accurate path when they were written and this log is append-only, so they
 stand as written.
+
+---
+
+## 2026-09-12 — Taskfile owns cluster-infrastructure image versions
+
+**Decision.** `Taskfile.yml` `vars:` is the fourth and last version authority in this
+lab, holding the two images Phase 0 introduces — the k3s node image and the k3d registry
+image — both pinned by manifest-list index digest.
+
+The complete map, so this is answerable without archaeology:
+
+| Version class | Authority | Changed by |
+|---|---|---|
+| Host CLI tools (9) | `scripts/bootstrap-toolchain.sh` pin list | hand-edited; brew installs, `brew pin` freezes |
+| Cluster infra images | `Taskfile.yml` `vars:` | hand-edited |
+| Platform Helm charts | `platform/<env>/versions.yaml` (Phase 1) | `versions:check` PRs into **dev only**; prod by promotion |
+| Service image digests | `bo-deploy/rendered/<env>/` (Phase 3) | CI writes; `cmd/promoter` copies dev→prod |
+
+**Why not a fifth file.** `clusters/versions.yaml` would match the `platform/<env>/`
+pattern, but the three k3d config files cannot interpolate a shared variable, so the
+Taskfile would have to read it — and parsing YAML in shell needs `yq`, which is not in
+the pin list. Adding a tenth pinned tool to avoid duplicating two strings is a bad trade.
+
+**Pins chosen.**
+
+- `rancher/k3s` **v1.36.4-k3s1**, index digest `sha256:edad48e1…`. Held at 1.36.x by the
+  Helm 4.2 n-3 window recorded 2026-09-05, *not* by what k3d defaults to — k3d 5.9.0
+  would otherwise pick v1.35.5-k3s1, which is inside the window but not deliberate.
+  1.37.0 is current stable and is above the ceiling.
+- `library/registry` **2.8.3**, index digest `sha256:a3d8aaa6…`. k3d's default is the
+  floating tag `registry:2`; this is byte-identical to it today, but pinned. Left as a
+  floating tag it would have been the only mutable reference in the lab.
+
+Both verified multi-arch (`linux/amd64` + `linux/arm64`) before pinning.
+
+---
+
+## 2026-09-12 — Push registry on host port 5005, not 5000
+
+**Decision.** The push registry publishes on host port **5005**. The four pull-through
+caches keep 5001–5004 as the build plan specifies.
+
+**Why.** On macOS, port 5000 is held by Control Center (AirPlay Receiver). Verified on
+this machine — `lsof -iTCP:5000` shows `ControlCe` listening. `k3d registry create
+--port 5000` would fail to bind.
+
+**Why this changes nothing structurally.** The `--port` flag sets only the *host*-side
+publish port. Inside the `gitops-lab` Docker network the registry always listens on 5000,
+so `k3d-registry:5000` — the address used by `clusters/registries.yaml`, by image
+references in manifests, and by the OCI chart repo in Phase 2 — is unaffected. The only
+thing that moves is `docker push localhost:5005/...` from the host.
+
+**Alternative rejected.** Turning off AirPlay Receiver in System Settings would free 5000,
+but that is an undocumented change to the operator's machine that a future rebuild on a
+different Mac would silently need. Moving the port is in git.
+
+---
+
+## 2026-09-12 — Branch protection requires 0 approving reviews, not 1
+
+**Decision.** `task repos:protect` sets `required_approving_review_count: 0` and
+`require_last_push_approval: false`, deviating from BUILD-PLAN Phase 3, which specifies
+1 approving review and approval from someone other than the last pusher.
+
+**Why.** `bo-jr` is the sole collaborator on all seven repos — verified, not assumed —
+and **GitHub does not permit approving your own pull request**. With 1 required approval,
+no PR could ever be merged except by admin bypass. That is strictly worse than the
+private-repo failure the build plan rejects: there the rules are silently unenforced,
+here they would be enforced into a deadlock whose only escape is a bypass used on every
+single merge, making the bypass the normal path and the gate decoration.
+
+**What the gate still is at 0.** A pull request is still required to modify `main`;
+force-push (`non_fast_forward`) and branch deletion are blocked; stale reviews are
+dismissed on push; and required status checks — including the dev-health check of
+Phase 3 — must pass before merge. The merge remains a deliberate human action. What is
+lost is only *second-person* review, which a solo account cannot provide under any
+configuration.
+
+**Revisit when:** a second human has write access, or a bot identity opens promotion PRs
+so that `bo-jr` approving them is genuinely a second party. The latter is the more likely
+path — `cmd/promoter` already authenticates as a separate fine-grained PAT, and a GitHub
+App identity (noted in Phase 3 as better hygiene, and free if Phase 9 adopts Kargo) would
+make `require_last_push_approval: true` meaningful.
+
+**Not applied yet.** The ruleset has been written but deliberately not pushed to GitHub —
+that is an outward-facing change to seven live repos and wants an explicit go-ahead.
+`task repos:protect:show` reports the current state (all seven at 0 rulesets).

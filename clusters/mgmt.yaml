@@ -1,0 +1,22 @@
+# k3d cluster: mgmt
+# hub — Argo CD, central Prometheus, Pyrra, Grafana, Loki, Tempo, Kiali, OpenBao
+#
+# The k3s node image is NOT set here — it is passed with --image from
+# Taskfile.yml so all three clusters share one definition. See DECISIONS.md
+# for why Kubernetes is held at 1.36.x (Helm 4.2 supports n-3: 1.36 down to 1.33).
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: mgmt
+servers: 1
+agents: 0
+network: gitops-lab
+options:
+  k3s:
+    extraArgs:
+      # Istio's Gateway API implementation is the ingress, so Traefik is dead
+      # weight and would fight it for :80/:443. servicelb, local-path and
+      # metrics-server are deliberately KEPT.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*

@@ -1,0 +1,42 @@
+# containerd registry mirrors, handed to every cluster with `--registry-config`.
+#
+# Endpoints are tried IN ORDER, so a cold local cache falls through to a public
+# mirror before it ever reaches the origin. That ordering is the whole point:
+# BUILD-PLAN Phase 8 does two full rebuilds — six cluster builds pulling ~40
+# distinct platform images each — and unauthenticated Docker Hub is capped near
+# 10 pulls/hour.
+#
+# Hostnames here are Docker DNS on the shared `gitops-lab` network. The registry
+# containers always listen on 5000 INSIDE the network no matter which host port
+# they are published on, so these never change when a host port does.
+mirrors:
+  # our own push registry, plain HTTP — without this entry containerd tries
+  # HTTPS against it and fails
+  "k3d-registry:5000":
+    endpoint:
+      - "http://k3d-registry:5000"
+
+  docker.io:
+    endpoint:
+      - "http://k3d-dockerhub:5000"   # local authenticated cache
+      - "https://mirror.gcr.io"       # Google's free Docker Hub pull-through
+      - "https://registry-1.docker.io" # origin
+  quay.io:
+    endpoint:
+      - "http://k3d-quay:5000"
+      - "https://quay.io"
+  ghcr.io:
+    endpoint:
+      - "http://k3d-ghcr:5000"
+      - "https://ghcr.io"
+  registry.k8s.io:
+    endpoint:
+      - "http://k3d-k8s:5000"
+      - "https://registry.k8s.io"
+
+  # Istio ships from gcr.io. No cache: registry proxy mode is single-upstream and
+  # gcr.io is CDN-backed with no meaningful rate limit, so a fifth container
+  # would cost RAM and buy nothing.
+  gcr.io:
+    endpoint:
+      - "https://gcr.io"
