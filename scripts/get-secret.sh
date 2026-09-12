@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The portability seam (BUILD-PLAN §2a).
 #
-# Keychain does not exist on Windows, so this lab uses the 1Password CLI on BOTH
-# macOS and WSL2. There is deliberately no `uname` dispatch here: one backend,
-# one code path, identical behaviour on both machines.
+# Secrets come from the 1Password CLI rather than the macOS Keychain. There is
+# deliberately no `uname` dispatch here: one backend, one code path. Keychain
+# would tie the lab to this machine; `op` does not.
 #
 #   ./scripts/get-secret.sh <item>     -> prints the credential to stdout
 #   ./scripts/get-secret.sh --check    -> reports present/EMPTY/MISSING, prints NO values
@@ -43,7 +43,7 @@ phase_of() {
 command -v op >/dev/null 2>&1 || {
   echo "1Password CLI (op) not found." >&2
   echo "  macOS: brew install 1password-cli" >&2
-  echo "  WSL2 : see https://developer.1password.com/docs/cli/get-started/" >&2
+  echo "  docs : https://developer.1password.com/docs/cli/get-started/" >&2
   exit 1
 }
 

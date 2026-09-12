@@ -82,38 +82,41 @@ answer is `sandbox`, never disabling self-heal.
 
 ## Machine setup
 
-Two machines, one lab: **MacBook M1 (arm64)** — the runtime target — and **Windows 11 /
-WSL2 (amd64)**, which builds and tests but is too small to host the clusters.
-`SETUP.md` is the pickup procedure. `DECISIONS.md` records every delta from the
-build plan and why; append to it rather than editing the plan.
+One machine: **MacBook M1 (arm64)**, 64GB. `SETUP.md` is the pickup procedure.
+`DECISIONS.md` records every delta from the build plan and why; append to it rather
+than editing the plan.
 
-- Repo root is `~/git/` on **both** machines, all seven cloned side by side. On
-  Windows that is the WSL2 home, **never `/mnt/c/`**.
+- Repo root is `~/git/`, all seven cloned side by side.
 - `scripts/bootstrap-toolchain.sh` owns host tool versions. That pin list is the single
-  source of truth. **Homebrew installs them on macOS**, `curl` on WSL2 — but neither
-  chooses the version. Never `brew install` or `brew upgrade` one of the nine by hand.
-- **All nine are `brew pin`ned on macOS.** Homebrew has no versioned formulae for them,
-  so pinning is the only thing stopping a stray `brew upgrade` from moving helm off 4.2.4.
-  If brew's stable moves ahead of the pin list, `--verify` fails — update the pin list
+  source of truth. **Homebrew installs them**, but it does not choose the version —
+  never `brew install` or `brew upgrade` one of the ten by hand.
+- **All ten are `brew pin`ned.** Homebrew has no versioned formulae for them, so pinning
+  is the only thing stopping a stray `brew upgrade` from moving helm off 4.2.4. If brew's
+  stable moves ahead of the pin list, `--verify` fails — update the pin list
   deliberately, do not unpin to make the error go away.
-- Run `./scripts/bootstrap-toolchain.sh --verify` before blaming anything else when the
-  two machines disagree. Drift is the first suspect.
-- Secrets come from 1Password via `scripts/get-secret.sh` on both machines. There is no
-  `uname` branch here and there should never be one.
+- Run `./scripts/bootstrap-toolchain.sh --verify` before blaming anything else when
+  something behaves differently than it did yesterday. Drift is the first suspect.
+- Secrets come from 1Password via `scripts/get-secret.sh`. Use `--check` to confirm the
+  vault; never the plain form, which prints the credential into your scrollback.
 - **Helm is 4.x.** Argo CD ≥3.5 renders with Helm 4 only; rendering CI manifests with
   Helm 3 reintroduces exactly the drift rendered manifests exist to remove.
 
-## Cross-platform, always
+## Architecture discipline
 
-Every change must work on `darwin/arm64` and `linux/amd64`.
+The lab runs only on `darwin/arm64`. **Images are still built and pinned multi-arch**,
+and that is not vestigial: **GitHub Actions runners are `linux/amd64`** while every
+cluster here is `arm64`, so anything CI builds, scans or renders crosses that boundary.
 
 - **Pin the manifest-list (index) digest, never a per-arch digest.** A platform-specific
-  digest pulls fine on the machine you tested and fails `no match for platform` on the
-  other. This is the most likely portability bug in the whole lab.
-- Build own images for `linux/amd64,linux/arm64`.
+  digest pulls fine where you tested it and fails `no match for platform` on the other
+  architecture. With CI on amd64 and the lab on arm64, that boundary is crossed on every
+  build — this is the most likely portability bug in the whole lab.
+- Build own images for `linux/amd64,linux/arm64`. The amd64 leg is what CI runs tests
+  against; the arm64 leg is what actually gets deployed.
 - Prefer plain shell and `docker` steps over marketplace actions — many ship amd64-only
-  binaries.
+  binaries, which breaks the native-arm64 runner leg.
 - **LF endings**, enforced by `.gitattributes` in all seven repos. A CRLF `.sh` copied
   into a Linux image dies as `bad interpreter: /bin/bash^M`.
-- No `uname` branching anywhere except `scripts/bootstrap-toolchain.sh`, which needs it
-  to choose a download URL.
+- `scripts/bootstrap-toolchain.sh` keeps a Linux install path. It is unused day to day
+  and deliberately retained: it is what a CI runner would use, and it is the only file
+  allowed to branch on `uname`.

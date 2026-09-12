@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Pinned host toolchain for the GitOps lab.
 #
-# The SAME script runs on macOS (darwin/arm64) and WSL2 Ubuntu (linux/amd64).
-# That is the point: two machines, one pin list, no drift.
+# The lab runs on macOS (darwin/arm64). The Linux path below is retained but not
+# exercised day to day — it is what a CI runner would use. One pin list either way.
 #
 #   ./scripts/bootstrap-toolchain.sh            install or repair
 #   ./scripts/bootstrap-toolchain.sh --verify    assert installed == pinned
@@ -118,7 +118,8 @@ if [ "$OS" = darwin ]; then
   exec "$0" --verify
 fi
 
-# ---- Linux (WSL2): no Homebrew, download each pinned release directly --------
+# ---- Linux: no Homebrew, download each pinned release directly ---------------
+# Not used on the MacBook. Kept for CI runners and any future Linux host.
 echo ">> installing pinned toolchain for ${OS}/${ARCH} into ${BIN}"
 mkdir -p "$BIN"
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
