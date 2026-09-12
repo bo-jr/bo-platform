@@ -173,11 +173,28 @@ secret below, each holding the value in a field named `credential`:
 | `discord-deploys` | webhook URL for `#deploys` |
 | `discord-alerts` | webhook URL for `#alerts` |
 
-Smoke test:
+Items are *API Credential* category, so `credential` is the native primary field
+rather than a custom one. All seven can be created empty up front — only fill the
+ones the phase you are on needs.
+
+Check the vault without printing anything:
 
 ```bash
-./scripts/get-secret.sh dockerhub-user
+./scripts/get-secret.sh --check
 ```
+
+It reports `ok` / `EMPTY` / `MISSING` per item with the phase that needs it, and
+never emits a value. For a single phase's gate, pass the items:
+
+```bash
+./scripts/get-secret.sh --check "dockerhub-user dockerhub-token"
+```
+
+> **Do not run the plain `./scripts/get-secret.sh <item>` form to test the vault.**
+> It prints the credential to stdout — that is its purpose, since callers use it as
+> `--proxy-password "$(./scripts/get-secret.sh dockerhub-token)"` — but running it
+> interactively writes the secret into your terminal scrollback, which is exactly
+> where a credential is most likely to end up in a screenshot. Use `--check`.
 
 These and the git credential are the only things that outlive `task nuke`. Nothing
 else is exempt from git.
