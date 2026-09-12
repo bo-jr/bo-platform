@@ -233,39 +233,60 @@ tasks:
   # -------------------------------------------------------------------------
 
   repos:protect:
-    desc: "Apply the same branch-protection ruleset to all seven repos."
+    desc: "Apply the same branch-protection ruleset to all seven repos (idempotent)."
     vars:
       REPOS: bo-platform bo-deploy bo-service-chart bo-service-kit bo-storefront bo-catalog bo-pricing
-      # Number of approving reviews required on main.
+      # Approving reviews required on main.
       #
-      # READ BEFORE CHANGING. bo-jr is the only collaborator on these repos, and
-      # GitHub does not let you approve your own pull request. Setting this to 1
-      # makes every PR permanently unmergeable except by an admin bypass — which
-      # turns the prod gate into decoration, the exact failure BUILD-PLAN warns
-      # about for private repos. At 0 the gate is still real: a PR is required,
-      # force-push and deletion are blocked, and required status checks must pass
-      # before merge. Raise this the day a second human can approve.
+      # READ BEFORE CHANGING. bo-jr is the only collaborator, and GitHub does not
+      # let you approve your own pull request. At 1 every PR becomes unmergeable
+      # except by admin bypass — and a gate whose only path is a bypass is
+      # decoration, the exact failure BUILD-PLAN rejects for private repos. At 0
+      # the gate is still real: a PR is required, force-push and deletion are
+      # blocked, stale reviews are dismissed, and required status checks must
+      # pass. Raise this when a second identity can approve — most likely when
+      # cmd/promoter opens prod PRs under its own token (Phase 3).
       REVIEWS: '0'
     cmds:
       - |
         set -eu
+        payload=$(mktemp); trap 'rm -f "$payload"' EXIT
+        cat > "$payload" <<JSON
+        {
+          "name": "main-protection",
+          "target": "branch",
+          "enforcement": "active",
+          "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+          "rules": [
+            { "type": "deletion" },
+            { "type": "non_fast_forward" },
+            { "type": "pull_request",
+              "parameters": {
+                "required_approving_review_count": {{.REVIEWS}},
+                "dismiss_stale_reviews_on_push": true,
+                "require_code_owner_review": false,
+                "require_last_push_approval": false,
+                "required_review_thread_resolution": false,
+                "automatic_copilot_code_review_enabled": false,
+                "allowed_merge_methods": ["squash", "merge", "rebase"]
+              }
+            }
+          ]
+        }
+        JSON
+
         for r in {{.REPOS}}; do
           printf '%-18s ' "$r"
-          gh api -X POST "repos/bo-jr/$r/rulesets" \
-            -H "Accept: application/vnd.github+json" \
-            -f name='main-protection' \
-            -f target='branch' \
-            -f enforcement='active' \
-            -F 'conditions[ref_name][include][]=~DEFAULT_BRANCH' \
-            -F 'rules[][type]=deletion' \
-            -F 'rules[][type]=non_fast_forward' \
-            -F 'rules[][type]=pull_request' \
-            -F 'rules[][parameters][required_approving_review_count]={{.REVIEWS}}' \
-            -F 'rules[][parameters][dismiss_stale_reviews_on_push]=true' \
-            -F 'rules[][parameters][require_code_owner_review]=false' \
-            -F 'rules[][parameters][require_last_push_approval]=false' \
-            -F 'rules[][parameters][required_review_thread_resolution]=false' \
-            --jq '"ruleset \(.id) applied"' 2>&1 | tail -1
+          # Update in place if it already exists — a bare POST would stack a
+          # second identical ruleset on every run.
+          id=$(gh api "repos/bo-jr/$r/rulesets" --jq '.[] | select(.name=="main-protection") | .id' 2>/dev/null | head -1)
+          if [ -n "$id" ]; then
+            gh api -X PUT "repos/bo-jr/$r/rulesets/$id" --input "$payload" \
+              --jq '"updated ruleset \(.id)"' 2>&1 | tail -1
+          else
+            gh api -X POST "repos/bo-jr/$r/rulesets" --input "$payload" \
+              --jq '"created ruleset \(.id)"' 2>&1 | tail -1
+          fi
         done
 
   repos:protect:show:
