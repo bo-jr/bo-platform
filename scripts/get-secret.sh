@@ -28,4 +28,14 @@ command -v op >/dev/null 2>&1 || {
   exit 1
 }
 
-op read "op://${VAULT}/$1/credential"
+# An item whose credential field is empty makes `op read` succeed and print
+# nothing, so a caller doing --proxy-password "$(get-secret.sh dockerhub-token)"
+# would build an unauthenticated registry and exit 0. That failure surfaces
+# hours later as `toomanyrequests` mid-rebuild. Empty is an error here.
+value=$(op read "op://${VAULT}/$1/credential")
+[ -n "$value" ] || {
+  echo "secret '$1' exists in vault '${VAULT}' but its credential field is empty." >&2
+  echo "Fill it in 1Password, then retry." >&2
+  exit 1
+}
+printf '%s\n' "$value"
