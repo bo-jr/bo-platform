@@ -5,25 +5,42 @@ This file is the mechanical setup, and the honest status of where the build is.
 
 ---
 
-## Status — last updated 2026-09-07
+## Status — last updated 2026-09-12
 
-**Phase 0 has not started.** No clusters exist on any machine.
+**Phase 0 is complete and verified.** All four acceptance criteria pass.
 
 | | |
 |---|---|
 | Repos | ✅ all seven created, public, `.gitattributes` seeded |
-| Branch protection | ❌ not applied — needs `task repos:protect`, which needs the Taskfile |
-| Taskfile | ❌ not written |
+| Branch protection | ✅ `main-protection` active on all seven, 0 required reviews |
+| Taskfile | ✅ lifecycle, status and repo targets |
 | Toolchain (Windows/WSL2) | ✅ installed and verified |
 | Toolchain (MacBook M1) | ✅ installed and verified — all nine `ok` |
 | Container runtime (MacBook M1) | ✅ Docker Desktop 4.89.0, engine 29.7.2, 36 GiB / 100 GiB |
-| 1Password vault | ❌ not created |
-| Clusters, registry, caches | ❌ Phase 0 |
+| 1Password vault | ✅ `gitops-lab`, 7 items; Phase 0 secrets filled |
+| Clusters, registry, caches | ✅ 3 clusters, 5 registries, k3s v1.36.4+k3s1 |
 
-**Next action:** Phase 0 on the MacBook — registry, four pull-through caches,
-three k3d clusters. See BUILD-PLAN §5. The 1Password vault (§5 below) is a
-prerequisite: the Docker Hub pull-through cache needs `dockerhub-user` and
-`dockerhub-token` at creation time.
+**Phase 0 acceptance, as measured 2026-09-12:**
+
+| Criterion | Result |
+|---|---|
+| All three clusters `Ready` | ✅ 6/6 nodes, all `v1.36.4+k3s1` — the pin held, not k3d's 1.35.5 default |
+| Pod in `dev` reaches `k3d-mgmt-server-0` by DNS | ✅ resolves to `172.18.0.8`, TCP 6443 open |
+| Image pushed to the registry pulls in all three | ✅ `k3d-registry:5000/phase0-smoke:v1` ran on mgmt, dev, prod |
+| Second build faster, proving cache hits | ✅ `dev` rebuilt in **27s** with the Docker Hub rate-limit counter **unchanged at 100** — zero upstream pulls |
+
+The last one is the interesting measurement. Rather than timing two builds and
+eyeballing the difference, compare `ratelimit-remaining` before and after a
+rebuild: if the caches are working the counter does not move at all, because
+nothing reached Docker Hub. Use `HEAD`, which does not itself count:
+
+```bash
+TOK=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:ratelimitpreview/test:pull" | jq -r .token)
+curl -s -I -H "Authorization: Bearer $TOK" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit-remaining
+```
+
+**Next action:** Phase 1 — Argo CD in `mgmt`, spoke registration, the platform
+ApplicationSet matrix generator. See BUILD-PLAN §5.
 
 **The Windows box cannot host the lab.** 31GB host, WSL2 capped at 8GB by choice.
 It builds, tests, and authors CI. The MacBook M1 (64GB) is the runtime target —
