@@ -21,6 +21,7 @@ COSIGN=v3.1.3
 JQ=jq-1.8.2
 GH=v2.100.0
 GO=go1.27.1
+ARGOCD=v3.5.2        # must track the Argo CD server version — see DECISIONS.md
 # ----------------------------------------------------------------------------
 
 BIN="$HOME/.local/bin"
@@ -46,6 +47,7 @@ want() { # tool -> pinned version string, normalised without leading v
     k3d) echo "${K3D#v}" ;; kubectl) echo "${KUBECTL#v}" ;; helm) echo "${HELM#v}" ;;
     task) echo "${TASK#v}" ;; d2) echo "${D2#v}" ;; cosign) echo "${COSIGN#v}" ;;
     jq) echo "${JQ#jq-}" ;; gh) echo "${GH#v}" ;; go) echo "${GO#go}" ;;
+    argocd) echo "${ARGOCD#v}" ;;
   esac
 }
 
@@ -62,13 +64,14 @@ have() { # tool -> installed version string, normalised
     jq)      jq --version 2>/dev/null | sed -n 's/^jq-\([0-9.]*\).*/\1/p' ;;
     gh)      gh --version 2>/dev/null | sed -n 's/^gh version \([0-9.]*\).*/\1/p' ;;
     go)      go version 2>/dev/null | sed -n 's/.*go\([0-9.]*\) .*/\1/p' ;;
+    argocd)  argocd version --client --short 2>/dev/null | sed -E -n 's/.*v([0-9]+\.[0-9]+\.[0-9]+).*/\1/p' ;;
   esac
 }
 
 if [ "${1:-}" = "--verify" ]; then
   echo "host: ${OS}/${ARCH}"
   rc=0
-  for t in k3d kubectl helm task d2 cosign jq gh go; do
+  for t in k3d kubectl helm task d2 cosign jq gh go argocd; do
     w=$(want "$t"); h=$(have "$t")
     if [ "$w" = "$h" ]; then
       printf '  ok     %-8s %s\n' "$t" "$h"
@@ -93,12 +96,13 @@ if [ "$OS" = darwin ]; then
     case "$1" in
       kubectl) echo kubernetes-cli ;;
       task)    echo go-task        ;;
+      argocd)  echo argocd          ;;
       *)       echo "$1"           ;;
     esac
   }
 
   echo ">> installing pinned toolchain for darwin/${ARCH} via Homebrew"
-  for t in k3d kubectl helm task d2 cosign jq gh go; do
+  for t in k3d kubectl helm task d2 cosign jq gh go argocd; do
     f=$(formula "$t")
     if brew list --versions "$f" >/dev/null 2>&1; then
       echo ">> $t ($f) already installed"
@@ -153,6 +157,9 @@ if [ "$GH_EXT" = zip ]; then
 else
   tar -xzf "$TMP/gh.tar.gz" -C "$TMP/gh" --strip-components=1; mv "$TMP/gh/bin/gh" "$BIN/gh"
 fi
+
+echo ">> argocd ${ARGOCD}"
+get "https://github.com/argoproj/argo-cd/releases/download/${ARGOCD}/argocd-${OS}-${ARCH}" "$BIN/argocd"; chmod +x "$BIN/argocd"
 
 echo ">> go ${GO}"
 get "https://go.dev/dl/${GO}.${OS}-${ARCH}.tar.gz" "$TMP/go.tgz"

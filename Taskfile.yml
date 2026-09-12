@@ -129,6 +129,30 @@ tasks:
         echo "clusters:"
         k3d cluster list 2>/dev/null || true
 
+  pods:
+    desc: "Every pod in all three clusters, all namespaces."
+    cmds:
+      - |
+        for c in {{.CLUSTERS}}; do
+          echo "=== $c ==="
+          kubectl --context "k3d-$c" get pods -A --no-headers 2>/dev/null \
+            | awk '{printf "  %-16s %-46s %-8s %s\n", $1, $2, $4, $3}' \
+            || echo "  (cluster not reachable)"
+        done
+
+  ui:
+    desc: "Argo CD UI — prints the admin password and port-forwards on :8080."
+    cmds:
+      - |
+        echo "url:      http://localhost:8080"
+        echo "user:     admin"
+        printf 'password: '
+        kubectl --context k3d-mgmt -n argocd get secret argocd-initial-admin-secret \
+          -o jsonpath='{.data.password}' 2>/dev/null | base64 -d; echo
+        echo ""
+        echo "Ctrl-C to stop the port-forward."
+        kubectl --context k3d-mgmt -n argocd port-forward svc/argocd-server 8080:80
+
   # -------------------------------------------------------------------------
   # Pieces of `up` — internal, but individually runnable when something breaks
   # -------------------------------------------------------------------------
