@@ -12,8 +12,9 @@ silent: true
 # live here: the three cluster configs cannot share a variable between them,
 # and reading a YAML file would need yq, which is not in the pin list.
 #
-# Pinned by manifest-list (index) digest, never tag. A per-arch digest would
-# pull on this MacBook and fail `no match for platform` on the WSL2 box.
+# Pinned by manifest-list (index) digest, never tag. A per-arch digest would pull
+# here on arm64 and fail `no match for platform` on the amd64 GitHub Actions
+# runners that build and scan these images.
 # ---------------------------------------------------------------------------
 vars:
   NETWORK: gitops-lab

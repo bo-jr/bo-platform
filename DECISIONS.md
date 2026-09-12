@@ -405,3 +405,47 @@ not by cluster containerd — the two stores are separate, so pre-pulling those 
 helps while pre-pulling the others does not. The only remaining Docker Hub images are the
 Grafana stack in Phase 4 (`grafana/{grafana,loki,tempo,alloy,k6}`). Everything else comes
 from quay.io, ghcr.io, registry.k8s.io or gcr.io.
+
+---
+
+## 2026-09-12 — One machine: macOS only, Windows/WSL2 dropped
+
+**Decision.** Supersedes the 2026-09-05 entry "The Windows machine does not host the lab"
+and closes out BUILD-PLAN §2a. The lab targets **macOS / `darwin/arm64` only**. Windows 11
+and WSL2 are no longer a supported host, and the two-machine framing is removed from
+`CLAUDE.md`, `SETUP.md`, `README.md` and both scripts.
+
+**Why.** Operator decision — the MacBook is where this actually runs. The Windows box was
+already barred from hosting the clusters (31GB host, WSL2 capped at 8GB), so it only ever
+built and authored CI, and CI itself runs on GitHub-hosted runners. It was carrying
+documentation and code paths for a role nothing depended on.
+
+**What was removed.** The `.wslconfig` memory section, the `/mnt/c/` prohibition, the
+`Toolchain (Windows/WSL2)` status row, the two-installer table in SETUP.md §3, and every
+"both machines" phrasing.
+
+**What was deliberately KEPT, and why it is not vestigial.**
+
+- **Multi-arch image builds (`linux/amd64,linux/arm64`).**
+- **Manifest-list index digests, never per-arch digests.**
+- **LF line endings** via `.gitattributes`.
+- **The Linux install path** in `scripts/bootstrap-toolchain.sh`.
+
+The reason these survive is that the architecture boundary did not disappear with the
+Windows box — it moved. **GitHub Actions runners are `linux/amd64`; every cluster here is
+`arm64`.** BUILD-PLAN §3 builds services on a runner matrix and runs `kyverno apply`
+against rendered manifests in CI, so anything CI produces or validates crosses amd64 →
+arm64 on its way into the lab. A per-arch digest pinned from a CI run would pass there and
+fail `no match for platform` on every cluster. LF endings matter for the same reason:
+scripts are copied into Linux images regardless of what edits them.
+
+So the rule stays, with a corrected rationale. `CLAUDE.md`'s "Cross-platform, always"
+section is now "Architecture discipline" and states the CI-vs-lab boundary explicitly
+rather than the machine-vs-machine one.
+
+**Consequence.** `BUILD-PLAN.md` §2, §2a and the Phase 0 acceptance line "`task up`
+succeeds on both machines" are now historical. The plan is not edited — see the header of
+this file — so read §2a as superseded by this entry.
+
+**Revisit if:** a Linux host ever joins. The install path is still there and the pin list
+is unchanged, so that is a documentation change rather than an engineering one.

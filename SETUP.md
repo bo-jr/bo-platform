@@ -14,8 +14,7 @@ This file is the mechanical setup, and the honest status of where the build is.
 | Repos | ✅ all seven created, public, `.gitattributes` seeded |
 | Branch protection | ✅ `main-protection` active on all seven, 0 required reviews |
 | Taskfile | ✅ lifecycle, status and repo targets |
-| Toolchain (Windows/WSL2) | ✅ installed and verified |
-| Toolchain (MacBook M1) | ✅ installed and verified — all nine `ok` |
+| Toolchain (MacBook M1) | ✅ installed and verified — all ten `ok` |
 | Container runtime (MacBook M1) | ✅ Docker Desktop 4.89.0, engine 29.7.2, 36 GiB / 100 GiB |
 | 1Password vault | ✅ `gitops-lab`, 7 items; Phase 0 secrets filled |
 | Clusters, registry, caches | ✅ 3 clusters, 5 registries, k3s v1.36.4+k3s1 |
@@ -41,10 +40,6 @@ curl -s -I -H "Authorization: Bearer $TOK" https://registry-1.docker.io/v2/ratel
 
 **Next action:** Phase 1 — Argo CD in `mgmt`, spoke registration, the platform
 ApplicationSet matrix generator. See BUILD-PLAN §5.
-
-**The Windows box cannot host the lab.** 31GB host, WSL2 capped at 8GB by choice.
-It builds, tests, and authors CI. The MacBook M1 (64GB) is the runtime target —
-see `DECISIONS.md`.
 
 ---
 
@@ -74,36 +69,17 @@ docker desktop stop && jq '.MemoryMiB=36864 | .DiskSizeMiB=102400 | .SwapMiB=409
 > First boot after installing Docker Desktop takes a few minutes and gives no progress
 > indication. It is not hung. `docker desktop status` reports when the engine is up.
 
-**Windows 11** — Docker Desktop with the **WSL2 backend**. Not Hyper-V, not Windows
-containers. Enable WSL integration for the Ubuntu distro. Memory is set in
-`%USERPROFILE%\.wslconfig`:
-
-```ini
-[wsl2]
-memory=8GB
-
-[experimental]
-autoMemoryReclaim=gradual
-```
-
-> `autoMemoryReclaim` belongs under `[experimental]`. Under `[wsl2]` WSL logs
-> `Unknown key 'wsl2.autoMemoryReclaim'` on every launch and silently ignores it.
-
 Verify the runtime before going further:
 
 ```bash
 docker info --format '{{.ServerVersion}} {{.OSType}}/{{.Architecture}}'
 ```
 
-On Windows this must be run **inside WSL2**, not from PowerShell.
-
 ---
 
 ## 2. Clone all seven repos side by side
 
-Repo root is `~/git/` on both machines. On Windows that means the WSL2
-home directory — **never `/mnt/c/`**, which mangles script permissions and is an
-order of magnitude slower.
+Repo root is `~/git/`.
 
 ```bash
 mkdir -p ~/git && cd ~/git
@@ -124,20 +100,19 @@ The flat side-by-side layout is required by `go.work` (BUILD-PLAN §4), which sp
 cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
-Detects the host and installs the nine pinned tools two different ways:
+Installs the ten pinned tools with Homebrew into `/opt/homebrew/bin` and freezes each
+with `brew pin`.
 
-| | Installer | Location | Frozen by |
-|---|---|---|---|
-| **macOS** | Homebrew | `/opt/homebrew/bin` | `brew pin` |
-| **WSL2** | `curl` from each release | `~/.local/bin` | the URL itself |
+The pin list at the top of the script is the authority. Homebrew is only the installer —
+it has no versioned formulae for these tools and cannot install a chosen version, so
+`brew pin` is what actually holds them still. The script finishes by running `--verify`
+on itself, so a brew stable that has moved ahead of the pin list fails loudly instead of
+drifting quietly.
 
-The pin list at the top of the script is the authority on **both**. Homebrew is only
-the installer — it has no versioned formulae for these tools and cannot install a
-chosen version, so `brew pin` is what actually holds them still. On macOS the script
-finishes by running `--verify` on itself, so a brew stable that has moved ahead of the
-pin list fails loudly instead of drifting quietly.
+The script also carries an unused Linux path that downloads each pinned release
+directly. It is kept because it is what a CI runner would use.
 
-Open a new shell, then confirm both machines agree:
+Open a new shell, then confirm:
 
 ```bash
 ./scripts/bootstrap-toolchain.sh --verify
@@ -146,9 +121,9 @@ Open a new shell, then confirm both machines agree:
 Every line must say `ok`. A `DRIFT` line is the first thing to suspect when
 something behaves differently on one machine than the other.
 
-> If `--verify` reports drift on macOS after a `brew upgrade`, the fix is to decide
-> whether the new version is wanted and edit the pin list — **not** `brew unpin`. The
-> two machines have to agree, and the WSL2 box installs by exact URL.
+> If `--verify` reports drift after a `brew upgrade`, the fix is to decide whether the
+> new version is wanted and edit the pin list — **not** `brew unpin`. The pin list is
+> what makes a rebuild reproducible.
 
 ---
 
@@ -176,7 +151,7 @@ git config --global core.autocrlf input
 
 ## 5. Create the 1Password vault
 
-Secrets come from 1Password on **both** machines — see `scripts/get-secret.sh`.
+Secrets come from 1Password — see `scripts/get-secret.sh`.
 Create a vault named `gitops-lab` (override with `OP_VAULT`) with one item per
 secret below, each holding the value in a field named `credential`:
 

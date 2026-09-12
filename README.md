@@ -24,7 +24,7 @@ git clone https://github.com/bo-jr/bo-platform.git ~/git/bo-platform
 cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
-Runs unmodified on `darwin/arm64` and `linux/amd64`.
+Runs on `darwin/arm64`. Images are built and pinned multi-arch because CI runs on `linux/amd64`.
 
 ## The seven repos
 
