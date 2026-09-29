@@ -807,3 +807,35 @@ images and containers, including the running k3d nodes and registries.
 **Why this is not a new component.** BuildKit is already in BUILD-PLAN §3 ("Build and
 packaging"). It runs on the host, not in any cluster, and it is rootful here; rootless
 BuildKit is a CI concern for Phase 3.
+
+---
+
+## 2026-09-29 — Helm 4 prints OCI pull status on stdout; always render from a pulled archive
+
+**Reality check.** Helm 4.2.4's `helm template <name> oci://… --version X` writes two
+status lines to **stdout**, ahead of the manifests:
+
+```
+Pulled: ghcr.io/bo-jr/charts/service:0.1.0
+Digest: sha256:9fb2525198b84e8b4688fbb6dc81fb09debb428ca7c5017bd36b9747f87f3392
+```
+
+There is no flag to silence them. Piped into `kubectl apply`, they parse as the first YAML
+document and the apply fails with `apiVersion not set, kind not set` — which is how the
+first `task sandbox:deploy` failed.
+
+**Decision.** Never `helm template` an OCI reference directly. `helm pull` the pinned
+version into a temporary directory, discarding its output, then `helm template` the local
+archive. `task sandbox:deploy` does exactly this.
+
+**Consequence for Phase 3 — the one that matters.** CI renders into `bo-deploy/rendered/`
+the same way. There the failure would be quieter and worse than an apply error: two
+non-YAML lines committed into every rendered manifest, and into every promotion diff. The
+reusable workflow must pull first as well. Pulling first also gives CI a natural place to
+assert the chart's digest before rendering.
+
+**The 2026-09-05 revisit condition, answered.** That entry said to revisit Helm 4 "if the
+OCI publish flow in Phase 2 misbehaves". The *publish* flow did not: a host-only
+`helm registry login ghcr.io` with the token on stdin stored the credential in the macOS
+keychain (`credsStore`; `auths` stayed empty), `helm push` succeeded, and
+`helm registry logout` removed it. Only the consume side needed this change.
