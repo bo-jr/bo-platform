@@ -4,7 +4,7 @@
 # linux/arm64 (the lab) and linux/amd64 (CI runners). A per-arch digest would
 # pull here and fail `no match for platform` in CI.
 #
-# THESE DIGESTS BELONG TO v1.21.1. A chart bump in versions.yaml without new
+# THESE DIGESTS BELONG TO v1.21.2. A chart bump in versions.yaml without new
 # digests here runs the new chart's templates against the old binaries.
 
 crds:
@@ -12,21 +12,21 @@ crds:
 
 # Lab sizing: one replica each, explicit requests and limits on every container.
 image:
-  digest: sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a  # controller v1.21.1
+  digest: sha256:70f532fd9cfde0b09d55687200942399d89838bc2d5d5b45152eb799a15912b8  # controller v1.21.2
 resources:
   requests: { cpu: 10m,  memory: 64Mi }
   limits:   { cpu: 200m, memory: 256Mi }
 
 webhook:
   image:
-    digest: sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42  # webhook v1.21.1
+    digest: sha256:a60e2dac46dbb8a7f3df95c54ce941012f54c2fe022f0ee55aaa1ab40ed957ae  # webhook v1.21.2
   resources:
     requests: { cpu: 10m,  memory: 32Mi }
     limits:   { cpu: 100m, memory: 128Mi }
 
 cainjector:
   image:
-    digest: sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98  # cainjector v1.21.1
+    digest: sha256:c85268c64f2e0e76684bf5fe8906caff34b82523561c6affe0fae3546bd87562  # cainjector v1.21.2
   # cainjector watches Secrets cluster-wide, so it grows with the Secret count.
   # This is the one to raise first if it OOMs once ESO starts writing Secrets.
   resources:
@@ -38,7 +38,7 @@ cainjector:
 # a floating tag even when it is only a flag value.
 acmesolver:
   image:
-    digest: sha256:dbc7cc1354f603918e7c5af7f55a0a620537394452c93a565bde75c6f48e8837  # acmesolver v1.21.1
+    digest: sha256:699b40d622211ab7accad8a21b04c5fbaa1841ef7a12621e8de492dbe27b2503  # acmesolver v1.21.2
 
 # A Helm post-install Job that only checks the API came up. Under Argo CD it
 # would run as a hook on every sync. Argo CD's own health checks already answer

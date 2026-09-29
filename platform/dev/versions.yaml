@@ -9,6 +9,6 @@
 - component: cert-manager
   repoURL: https://charts.jetstack.io
   chart: cert-manager
-  version: v1.21.1
+  version: v1.21.2
   namespace: cert-manager
   wave: "0"
