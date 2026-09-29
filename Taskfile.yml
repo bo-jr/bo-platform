@@ -34,7 +34,18 @@ vars:
   # network it is k3d-registry:5000, which is what manifests and mirrors use.
   PUSH_PORT: '5005'
 
+  # moby/buildkit v0.33.0 — linux/amd64 + linux/arm64. The local image builder
+  # (`task builder`). Docker Desktop here runs the classic image store, whose
+  # `docker` build driver cannot produce a multi-platform image; see
+  # DECISIONS.md 2026-09-29. Host-side only — no cluster runs it.
+  BUILDKIT_IMAGE: docker.io/moby/buildkit@sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3
+  BUILDER: gitops-lab
+
   CLUSTERS: mgmt dev prod
+
+  # Phase 2 sandbox loop. Service repos are cloned side by side under ~/git.
+  SERVICES: storefront catalog pricing
+  SERVICE_CHART: oci://ghcr.io/bo-jr/charts/service
 
 tasks:
 
@@ -268,6 +279,108 @@ tasks:
     desc: "Assert bootstrap.sh installs only Argo CD and applies only the root app."
     cmds:
       - ./scripts/lint-bootstrap.sh
+
+  # -------------------------------------------------------------------------
+  # Services: local builds and the `sandbox` inner loop (Phase 2)
+  #
+  # `sandbox` is a namespace in dev that NO Argo CD Application manages. It is
+  # where iteration happens; nothing in it is a source of truth or is promoted.
+  # From Phase 3, services reach dev through bo-deploy instead.
+  # -------------------------------------------------------------------------
+
+  builder:
+    desc: "Create the pinned BuildKit builder for multi-arch images (idempotent)."
+    deps: [net]
+    cmds:
+      - |
+        if docker buildx inspect {{.BUILDER}} >/dev/null 2>&1; then
+          echo "builder {{.BUILDER}} already present"
+        else
+          # On the lab network, so it pushes to k3d-registry:5000 by the same
+          # name the clusters pull from. Never made the default builder: every
+          # build here names it explicitly.
+          docker buildx create --name {{.BUILDER}} --driver docker-container \
+            --driver-opt image={{.BUILDKIT_IMAGE}} \
+            --driver-opt network={{.NETWORK}} \
+            --buildkitd-config clusters/buildkitd.toml \
+            --bootstrap >/dev/null
+          echo "created builder {{.BUILDER}} on network {{.NETWORK}}"
+        fi
+
+  sandbox:
+    desc: "Create the unmanaged `sandbox` namespace in dev (idempotent)."
+    cmds:
+      - |
+        set -eu
+        # The one property that makes sandbox safe to iterate in.
+        n=$(kubectl --context k3d-mgmt -n argocd get applications -o json \
+          | jq '[.items[] | select(.spec.destination.namespace == "sandbox")] | length')
+        if [ "$n" != 0 ]; then
+          echo "refusing: $n Argo CD Application(s) target namespace sandbox" >&2
+          exit 1
+        fi
+        kubectl --context k3d-dev apply -f - >/dev/null <<'YAML'
+        apiVersion: v1
+        kind: Namespace
+        metadata:
+          name: sandbox
+          labels:
+            gitops-lab/unmanaged: "true"
+        YAML
+        echo "namespace sandbox ready in dev — no Argo CD Application targets it"
+
+  sandbox:db:
+    desc: "Apply catalog's Postgres Cluster to sandbox and wait until it is Ready."
+    deps: [sandbox]
+    cmds:
+      - kubectl --context k3d-dev -n sandbox apply -f databases/dev/catalog.yaml
+      - kubectl --context k3d-dev -n sandbox wait cluster.postgresql.cnpg.io/catalog-db --for=condition=Ready --timeout=300s
+
+  sandbox:build:
+    desc: "Build a service for amd64+arm64 and push it by digest. Usage: task sandbox:build -- <service>"
+    deps: [builder]
+    cmds:
+      - |
+        set -eu
+        svc="{{.CLI_ARGS}}"
+        case " {{.SERVICES}} " in *" $svc "*) ;; *) echo "usage: task sandbox:build -- <{{.SERVICES}}>" >&2; exit 1 ;; esac
+        mkdir -p .sandbox
+        # push-by-digest: no tag is created in the registry at all. The index
+        # digest BuildKit reports is the only handle, and the only thing the
+        # rendered manifest will reference.
+        docker buildx build --builder {{.BUILDER}} \
+          --platform linux/amd64,linux/arm64 \
+          --output "type=image,name=k3d-registry:5000/bo-$svc,push-by-digest=true,name-canonical=true,push=true" \
+          --metadata-file ".sandbox/$svc.build.json" \
+          "$HOME/git/bo-$svc"
+        jq -r '."containerimage.digest"' ".sandbox/$svc.build.json" > ".sandbox/$svc.digest"
+        echo "pushed k3d-registry:5000/bo-$svc@$(cat ".sandbox/$svc.digest")"
+
+  sandbox:deploy:
+    desc: "Render a service with the pinned shared chart and apply it to sandbox. Usage: task sandbox:deploy -- <service> [helm args]"
+    deps: [sandbox]
+    cmds:
+      - |
+        set -eu
+        set -- {{.CLI_ARGS}}
+        svc=${1:-}; shift || true
+        case " {{.SERVICES}} " in *" $svc "*) ;; *) echo "usage: task sandbox:deploy -- <{{.SERVICES}}> [helm args]" >&2; exit 1 ;; esac
+        values="$HOME/git/bo-$svc/chart-values.yaml"
+        [ -f ".sandbox/$svc.digest" ] || { echo "no build yet: task sandbox:build -- $svc" >&2; exit 1; }
+        # The service repo pins the chart; this reads the pin rather than
+        # choosing a version. The chart refuses to render on a mismatch.
+        ver=$(awk '/^chartVersion:/ { print $2; exit }' "$values")
+        # Extra args override chart-values, e.g. --set-string env.FAILURE_RATE=0.5
+        helm template "$svc" {{.SERVICE_CHART}} --version "$ver" -f "$values" \
+          --set image.repository="k3d-registry:5000/bo-$svc" \
+          --set image.digest="$(cat ".sandbox/$svc.digest")" "$@" \
+          | kubectl --context k3d-dev -n sandbox apply --server-side --field-manager=sandbox -f -
+        kubectl --context k3d-dev -n sandbox rollout status "deploy/$svc" --timeout=180s
+
+  sandbox:down:
+    desc: "Delete the sandbox namespace, including catalog's database."
+    cmds:
+      - kubectl --context k3d-dev delete namespace sandbox --ignore-not-found
 
   # -------------------------------------------------------------------------
   # GitHub

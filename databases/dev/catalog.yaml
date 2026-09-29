@@ -1,0 +1,37 @@
+# catalog's Postgres on the DEV spoke — environment infrastructure, not part of
+# any release (DECISIONS.md 2026-09-29).
+#
+# It lives here rather than in the service chart so that no release, rollback or
+# `git revert` in bo-deploy can ever delete it: CNPG garbage-collects the PVCs
+# with the Cluster. The schema and seed rows are NOT here; they are migrations
+# embedded in the catalog binary, so a schema change promotes with the digest.
+#
+# Namespace-less on purpose. Phase 2: `task sandbox:db` applies it to `sandbox`.
+# Phase 3: Argo CD delivers it next to the services.
+#
+# CNPG generates the Secret `catalog-db-app` (keys include `uri`), which catalog
+# reads as DATABASE_URL. Phase 7 moves that Secret's source to OpenBao via ESO.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: catalog-db
+spec:
+  instances: 1
+
+  # Postgres 18.6, the operator's own default, pinned by INDEX digest
+  # (linux/amd64 + linux/arm64). Must match POSTGRES_IMAGE_NAME in
+  # platform/dev/values/cloudnative-pg.yaml.
+  imageName: ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:99bc64e413d59b017d169ce2ff25746f1d68c5d7210a19f12c0464a109216ee1
+
+  storage:
+    storageClass: local-path
+    size: 1Gi
+
+  resources:
+    requests: { cpu: 100m, memory: 256Mi }
+    limits:   { cpu: 500m, memory: 512Mi }
+
+  bootstrap:
+    initdb:
+      database: catalog
+      owner: catalog

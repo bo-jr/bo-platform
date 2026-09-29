@@ -1,0 +1,3 @@
+# Local build state for the Phase 2 sandbox loop: the index digest each
+# `task sandbox:build` pushed, read back by `task sandbox:deploy`.
+.sandbox/

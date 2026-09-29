@@ -1,0 +1,8 @@
+# BuildKit daemon config for the local `gitops-lab` builder (`task builder`).
+#
+# The builder container sits on the gitops-lab Docker network and pushes to the
+# push registry by its in-network name, k3d-registry:5000 — the same reference
+# every cluster pulls. That registry speaks plain HTTP; without this entry
+# BuildKit insists on HTTPS and the push fails.
+[registry."k3d-registry:5000"]
+  http = true
