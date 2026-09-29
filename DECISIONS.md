@@ -581,3 +581,229 @@ Gateway API CRDs first): either ApplicationSet **progressive syncs** (`RollingSy
 keyed on the `wave` label, enabled in `platform/argocd-values.yaml`), or rely on
 self-heal retries until the dependencies exist. Progressive sync is configuration of a
 component already installed, not a new one. Decide then, with the real failure in front of you.
+
+---
+
+## 2026-09-29 — Phase 2 acceptance: trace propagation is proven in logs, Tempo moves to Phase 4
+
+**Decision.** BUILD-PLAN Phase 2's criterion "one request produces a single trace in Tempo
+spanning all three" is amended for Phase 2:
+
+- **Trace propagation** is proven by finding the **same `trace_id`** in the JSON logs of
+  `storefront`, `catalog` and `pricing` for one request.
+- **Error rate** is read from the `/metrics` counters directly
+  (`http_requests_total{status="500"}` over the total).
+- The **"single trace in Tempo"** check moves into **Phase 4's acceptance**, next to the
+  Grafana correlation check it naturally belongs with.
+
+**Why.** Tempo, Alloy and Prometheus arrive in Phase 4. Pulling them forward would break
+one-phase-per-session and land observability components before their retention and
+sizing are designed. The property Phase 2 owns is *propagation* — that `traceparent`
+crosses both hops — and a shared `trace_id` in three services' logs proves exactly that.
+
+**Constraint that comes with it.** The OTLP exporter must never block a request, crash a
+service, or fail `/readyz` when no collector is listening. `bo-service-kit` therefore
+always runs a real SDK TracerProvider (so trace IDs exist with no exporter at all) and
+attaches the OTLP exporter only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set, behind an
+async, bounded batch processor. Phase 2 verifies this in `sandbox` against a dead endpoint.
+
+---
+
+## 2026-09-29 — One Go module per service repo; `~/git/go.work` is local only
+
+**Decision.** BUILD-PLAN §3 says "one module, three binaries, one multi-stage Dockerfile
+with a build arg". §4's seven-repo layout — which exists — wins:
+
+- Each service repo is its own module (`github.com/bo-jr/bo-<service>`) and imports
+  `github.com/bo-jr/bo-service-kit` at a **tagged** version.
+- One Dockerfile per service repo, not one shared Dockerfile with a build arg.
+- A workspace at **`~/git/go.work`** spans the kit and the three services, so local builds
+  resolve against working trees. It is **never committed**; `go.work` and `go.work.sum`
+  are gitignored in all four repos as a guard.
+
+**Why.** §4 is the more specific and the more recent choice, and the repos are already
+created. The workspace gives back the inner-loop speed a monorepo would have had, while
+Docker and CI (whose build context holds only one repo) resolve against tags — so a
+passing local build never depends on unpublished kit code without it being obvious.
+
+**Tags are immutable.** The kit is public, so the first fetch of a tag records its hash in
+`sum.golang.org`. A tag is never moved; a fix is a new patch version.
+
+**Side effect, accepted.** `~/git/gocroservices` has its own `go.mod` and sits under the
+workspace, so `go` commands there now fail unless run with `GOWORK=off`. The operator is
+archiving that repo; it does not constrain this layout.
+
+---
+
+## 2026-09-29 — The shared chart is published to ghcr.io, not the local registry
+
+**Decision.** `bo-service-chart` is published as **`oci://ghcr.io/bo-jr/charts/service`**,
+not BUILD-PLAN's `oci://k3d-registry:5000/charts/service`. Each service pins it by exact
+version in a top-level `chartVersion:` field of its `chart-values.yaml`; the chart refuses
+to render if that field disagrees with its own `Chart.yaml` version.
+
+**Why.** Phase 3's GitHub Actions render manifests with `helm template`, and hosted
+runners cannot reach a registry on this laptop. Publishing locally now would mean
+re-publishing and re-pinning all three services in Phase 3. ghcr.io is also where the
+service images go, and the `ghcr` pull-through cache already fronts it.
+
+**How it is pushed (Phase 2).** From the laptop, with `gh`'s token given the
+`write:packages` scope (`gh auth refresh -s write:packages` — it had only
+`gist, read:org, repo, workflow`). Login is host-only (`helm registry login ghcr.io`) with
+the token on **stdin**, never argv, followed by `helm registry logout` after the push.
+
+**Visibility.** ghcr creates a new personal-account package as **private**. The operator
+switches `charts/service` to public after the first push, so CI and anonymous pulls work.
+That is a one-way change on GitHub's side, and it matches the "all public" premise of §4.
+
+---
+
+## 2026-09-29 — Before CI exists, services reach dev through the unmanaged `sandbox` namespace
+
+**Decision.** In Phase 2 the services are rendered with `helm template` (the published,
+pinned chart plus each repo's `chart-values.yaml`) and piped to `kubectl apply` in the
+**`sandbox`** namespace of `dev`. `task sandbox` creates the namespace idempotently; no
+Argo CD Application targets it. Images are built locally, pushed to the push registry, and
+referenced by the index digest the push returns. Argo CD starts managing the services in
+Phase 3, from `bo-deploy/rendered/dev/`.
+
+**Why.** CI writes `bo-deploy`, and `bo-deploy` is never hand-edited, so there is nothing
+legitimate for Argo CD to sync until Phase 3. `helm upgrade --install` was declined: the
+Helm CLI never owns a release lifecycle in this lab (2026-09-05), and `helm template` is
+the same render path CI will use.
+
+---
+
+## 2026-09-29 — The service chart grows with the platform; no CRD-backed kinds in Phase 2
+
+**Decision.** `HTTPRoute`, `AuthorizationPolicy` and `ServiceMonitor` need CRDs that
+arrive in later phases, and applying them without their CRDs fails. The chart therefore
+ships each template **in the phase that installs its CRD**, added for every service at
+once, as a chart minor version:
+
+| Chart adds | Phase | CRD source |
+|---|---|---|
+| Deployment, Service, ServiceAccount | 2 | core |
+| ServiceMonitor | 4 | Prometheus Operator |
+| HTTPRoute, AuthorizationPolicy | 5 | Gateway API, Istio |
+| Rollout (`workload: Rollout`) | 6 | Argo Rollouts |
+
+In Phase 2 `values.schema.json` allows `workload: Deployment` only; Phase 6 widens the enum
+and adds the Rollout branch, so services never change the shape of their values.
+
+**Why.** It adds no conditionals and installs nothing early. The alternative — installing
+CRDs-only components (Gateway API, Istio `base`, `prometheus-operator-crds`) in dev now —
+would have needed an ApplicationSet `templatePatch` for Gateway API's raw-YAML release and
+left inert CRs waiting for controllers. The cost accepted here is 2–3 extra chart releases
+and a re-pin in each service per release.
+
+**Rejected outright: `.Capabilities.APIVersions.Has`.** It is a hidden per-feature
+conditional, and CI's `helm template` has no cluster to ask, so dev and CI would render
+different manifests — the drift rendered manifests exist to remove.
+
+---
+
+## 2026-09-29 — CloudNativePG: operator in the platform, `Cluster` in bo-platform, schema in the binary
+
+**Decision.**
+
+- **Operator.** `cloudnative-pg` chart **0.29.1** (operator **1.30.1**, officially
+  supporting Kubernetes 1.34–1.36) as a platform component through
+  `platform/dev/versions.yaml`, promoted to prod by its own PR.
+- **`Cluster` CR** for `catalog` lives in **bo-platform** at `databases/<env>/catalog.yaml`,
+  namespace-less. In Phase 2 it is applied by hand to `sandbox`; Argo CD wiring comes in
+  Phase 3.
+- **Schema and the ~50 seed rows** are **embedded SQL migrations in the catalog binary**,
+  applied at startup under a Postgres advisory lock, idempotent. Not CNPG's
+  `postInitApplicationSQL`, which runs once at cluster creation and could not carry the
+  scenario 5 schema change.
+- **Credentials** come from the `catalog-db-app` Secret CNPG generates, via `secretKeyRef`,
+  until Phase 7 moves them to OpenBao via ESO. The reference stays the same; only the
+  Secret's author changes.
+
+**Why the `Cluster` is not in the shared chart or in `bo-catalog`.** With schema in the
+binary, scenario 5's atomicity comes from the **image digest** — expand, migrate and
+read-both all ship inside catalog v2 and promote in the same `bo-deploy` PR as storefront —
+so the `Cluster` gains nothing by riding the release. What it would gain is risk: inside
+the app's Argo CD prune scope, a chart bug or a `git revert` of a release can delete the
+`Cluster`, and its PVCs are garbage-collected with it. The shared-chart option also needed
+a second conditional, and `bo-catalog` would have broken "source only". The cost of this
+choice is a naming contract — catalog refers to `catalog-db-app` by name — carried by a
+generic `secretEnv` list in the chart, which Phase 7's ESO Secrets use too.
+
+**Known, not specific to this choice.** On a cold rebuild (Phase 8), whatever Argo CD app
+holds the `Cluster` races the CNPG CRDs. The same gap would exist in any location; it is
+Phase 3's to solve alongside the 2026-09-29 sync-wave entry.
+
+**Reality check — the chart has no digest field.** It composes `repository:tag`, like the
+Argo CD chart (2026-09-12). Unlike that one, `image.tag` is used only in `image:` and in
+`OPERATOR_IMAGE_NAME`, never in a label, so `tag: "1.30.1@sha256:<index>"` renders a valid,
+digest-pinned reference, and the bootstrap image the operator injects into Postgres pods
+inherits the pin. The operand image is pinned through `config.data.POSTGRES_IMAGE_NAME` and
+again in the `Cluster`'s `imageName`.
+
+---
+
+## 2026-09-29 — Service images build on Chainguard `go` and `static`, pinned by index digest
+
+**Decision.** Every service Dockerfile uses:
+
+| Stage | Image | Index digest | Verified |
+|---|---|---|---|
+| build | `cgr.dev/chainguard/go` | `sha256:437e77100bb4ed52e039d6430d4a97a7ec55404abbd7ec3ef968b9e499bbda49` | **go1.27.1** (`go-1.27=1.27.1-r0`, from its SPDX attestation); amd64 + arm64 |
+| runtime | `cgr.dev/chainguard/static` | `sha256:41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f` | amd64 + arm64 |
+
+The build stage runs on `$BUILDPLATFORM` and cross-compiles with `GOOS`/`GOARCH` and
+`CGO_ENABLED=0`, so neither architecture needs QEMU. It sets **`GOTOOLCHAIN=local`**:
+the image defaults to `local+auto`, which would silently download a newer toolchain if a
+`go.mod` ever asked for one. With `local`, a mismatch against the pinned go1.27.1 fails.
+
+**Why.** BUILD-PLAN §5 names `cgr.dev`. The free tier publishes `:latest` only, which is
+fine because the lab never references a tag — only the digest.
+
+**Risk, accepted.** Chainguard's free `:latest` moves daily. If an old digest is ever
+garbage-collected upstream, rebuilding an old commit fails; refreshing the pin is a
+deliberate edit, like any other version bump.
+
+---
+
+## 2026-09-29 — Sibling repo docs refreshed before Phase 2 code
+
+**Decision.** The six sibling `CLAUDE.md` files are corrected in six docs-only PRs, one per
+repo, before any Phase 2 code lands:
+
+- `docs/BUILD-PLAN.md` / `docs/DECISIONS.md` → repo root; `~/gitops-lab/` → `~/git/`.
+- Windows/WSL2 "cross-platform" framing removed. Multi-arch builds, index digests and LF
+  endings are kept and explained by the CI-`amd64` vs lab-`arm64` boundary, as in
+  `bo-platform/CLAUDE.md` (2026-09-12).
+- `bo-deploy`: 0 required approvals, per 2026-09-12.
+- Today's outcomes where the old text had become wrong: the chart lives on ghcr.io, and
+  catalog's Postgres credentials come from the CNPG `-app` Secret until Phase 7.
+
+**Why.** Those files are what a session in each repo reads first. Left stale, they would
+have sent Phase 2 code to the wrong paths and the wrong registry.
+
+---
+
+## 2026-09-29 — Local multi-arch images build on a pinned BuildKit builder container
+
+**Reality check.** Docker Desktop here runs the **classic image store** (`overlay2`), and
+its buildx builders use the `docker` driver, which **cannot produce a multi-platform
+image**. Switching Docker Desktop to the containerd store was rejected: it hides existing
+images and containers, including the running k3d nodes and registries.
+
+**Decision.** `task builder` creates a buildx **`docker-container`** builder named
+`gitops-lab`, idempotently:
+
+- image `moby/buildkit:v0.33.0` pinned by index digest
+  `sha256:6c2fa84a6b61ccd72899dde4239f8d5717f05f9a8ca6f3cad185fb1a95a94de3`
+  (amd64 + arm64), held in `Taskfile.yml` `vars:` — version authority #4;
+- attached to the `gitops-lab` network, with `clusters/buildkitd.toml` marking
+  `k3d-registry:5000` as plain HTTP;
+- pushing **by digest** (`push-by-digest=true`) straight to `k3d-registry:5000/bo-<svc>`,
+  so the pushed reference is byte-for-byte the one the cluster pulls, and no tag is
+  created in the registry at all.
+
+**Why this is not a new component.** BuildKit is already in BUILD-PLAN §3 ("Build and
+packaging"). It runs on the host, not in any cluster, and it is rootful here; rootless
+BuildKit is a CI concern for Phase 3.
