@@ -1,0 +1,69 @@
+# Platform components on the spokes: one Application per (spoke x component).
+#
+# MATRIX, not a bare cluster generator: each spoke reads ITS OWN
+# platform/<env>/versions.yaml, picked by the cluster's `env` label. That is what
+# makes dev a real environment. Bumping a chart in dev is a PR against one file,
+# and promoting it to prod is a second PR against another.
+#
+# MULTI-SOURCE: the chart comes from its upstream repo, and the values come from
+# this repo via `ref: values`, so no upstream chart is ever vendored.
+#
+# Keep these Applications GENERATED. A hand-written copy per environment drifts.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          # Registered by scripts/register-spokes.sh with env=dev / env=prod.
+          # mgmt (in-cluster) has no env label and is deliberately not matched.
+          - clusters:
+              selector:
+                matchExpressions:
+                  - { key: env, operator: In, values: [dev, prod] }
+          # Each list element in the file becomes one parameter set. Component
+          # fields avoid `name`, which the cluster generator already provides.
+          - git:
+              repoURL: https://github.com/bo-jr/bo-platform.git
+              revision: main
+              files:
+                - path: "platform/{{ .metadata.labels.env }}/versions.yaml"
+  template:
+    metadata:
+      name: "{{ .component }}-{{ .metadata.labels.env }}"
+      labels:
+        env: "{{ .metadata.labels.env }}"
+        component: "{{ .component }}"
+        # Ordering between generated Applications is NOT enforced yet — an
+        # ApplicationSet creates them all at once. See DECISIONS.md 2026-09-29.
+        wave: "{{ .wave }}"
+    spec:
+      project: default
+      sources:
+        - repoURL: "{{ .repoURL }}"
+          chart: "{{ .chart }}"
+          targetRevision: "{{ .version }}"
+          helm:
+            releaseName: "{{ .component }}"
+            valueFiles:
+              - "$values/platform/{{ .metadata.labels.env }}/values/{{ .component }}.yaml"
+        - repoURL: https://github.com/bo-jr/bo-platform.git
+          targetRevision: main
+          ref: values
+      destination:
+        name: "{{ .name }}"
+        namespace: "{{ .namespace }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          # Platform charts ship large CRDs (cert-manager now, kube-prometheus-stack
+          # in Phase 4) that exceed the client-side apply annotation limit.
+          - ServerSideApply=true

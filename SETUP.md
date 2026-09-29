@@ -5,14 +5,17 @@ This file is the mechanical setup, and the honest status of where the build is.
 
 ---
 
-## Status — last updated 2026-09-12
+## Status — last updated 2026-09-29
 
 **Phase 0 is complete and verified.** All four acceptance criteria pass.
+**Phase 1 is in progress:** Argo CD v3.5.2 (chart 10.9.0) is installed in `mgmt`, all six
+pods Running. Not built yet: `bootstrap.sh`, `lint-bootstrap.sh`, spoke registration, the
+root app, and the platform ApplicationSet.
 
 | | |
 |---|---|
 | Repos | ✅ all seven created, public, `.gitattributes` seeded |
-| Branch protection | ✅ `main-protection` active on all seven, 0 required reviews |
+| Branch protection | ⚠️ `main-protection` active on **six of seven**. `bo-platform` has **no ruleset** (`task repos:protect:show`, 2026-09-29), so its `main` is unprotected. `task repos:protect` re-applies it |
 | Taskfile | ✅ lifecycle, status and repo targets |
 | Toolchain (MacBook M1) | ✅ installed and verified — all ten `ok` |
 | Container runtime (MacBook M1) | ✅ Docker Desktop 4.89.0, engine 29.7.2, 36 GiB / 100 GiB |
@@ -38,8 +41,8 @@ TOK=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=rep
 curl -s -I -H "Authorization: Bearer $TOK" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit-remaining
 ```
 
-**Next action:** Phase 1 — Argo CD in `mgmt`, spoke registration, the platform
-ApplicationSet matrix generator. See BUILD-PLAN §5.
+**Next action:** finish Phase 1. Put the by-hand Argo CD install into `bootstrap.sh`,
+register the spokes, and build the root app plus the matrix ApplicationSet. See BUILD-PLAN §5.
 
 ---
 

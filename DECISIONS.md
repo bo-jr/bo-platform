@@ -449,3 +449,135 @@ this file — so read §2a as superseded by this entry.
 
 **Revisit if:** a Linux host ever joins. The install path is still there and the pin list
 is unchanged, so that is a documentation change rather than an engineering one.
+
+---
+
+## 2026-09-12 — Argo CD is pinned by chart version, not image digest
+
+*Decided in PR #3 (`762831b`); recorded 2026-09-29. `platform/argocd-values.yaml`
+pointed here before this entry existed.*
+
+**Decision.** Argo CD is installed from `argo-cd` chart **10.9.0**, which selects app
+version **v3.5.2**. `global.image.tag` is left empty so the chart's `appVersion` applies.
+No image digest is set. This is the one image in the lab that is not pinned by digest.
+
+**Why.** The chart composes image references as `repository:tag` and appends the tag
+unconditionally. Setting `repository` to `quay.io/argoproj/argocd@sha256:…` renders
+`…@sha256:…:v3.5.2`, which is not a valid reference. Setting `tag: ""` does not omit the
+tag; it falls back to `appVersion`. The chart has no field that can express a digest,
+so the exact chart version is the tightest pin available without forking the chart.
+
+**Why this does not collide with Phase 7.** The digest-only Kyverno policy runs per-spoke
+(BUILD-PLAN §3). Argo CD runs only in `mgmt`, where no admission policy applies.
+
+**Revisit if:** the chart gains a digest field, or Phase 9b's argocd-agent charts move
+Argo CD components onto the spokes.
+
+---
+
+## 2026-09-12 — Argo CD reads git anonymously; no git credential at bootstrap
+
+*Decided in PR #3 (`762831b`); recorded 2026-09-29.*
+
+**Decision.** Argo CD is given no repository credential. It reads `bo-platform` and
+`bo-deploy` over anonymous HTTPS. This departs from BUILD-PLAN §6, which lists the Argo CD
+git credential as one of the two bootstrap-time inputs.
+
+**Why.** All seven repos are public, which is required for free branch protection
+(BUILD-PLAN §4), so anonymous read works. A credential that grants nothing beyond
+anonymous access is one more secret to seed and rotate for no gain.
+
+**Consequence.** The `argocd-git-credential` item stays in the 1Password vault, unused.
+`cmd/promoter`'s token (`promoter-github-pat`) is unaffected: it *writes*, and writing
+always needs a credential. `bootstrap.sh` therefore has exactly one bootstrap-time secret
+input left to handle later, the OpenBao seed (Phase 7).
+
+**Revisit if:** any repo Argo CD reads goes private, or GitHub starts throttling anonymous
+clones from this IP.
+
+---
+
+## 2026-09-12 — `argocd` CLI is the tenth pinned host tool
+
+*Decided in PR #3 (`762831b`); recorded 2026-09-29.*
+
+**Decision.** `argocd` **v3.5.2** joins the pin list in `scripts/bootstrap-toolchain.sh`,
+installed by Homebrew and frozen with `brew pin` like the other nine.
+
+**Why.** It was added for `argocd cluster add`, and CLAUDE.md forbids tools outside the
+pin list. Registration no longer uses it (see the 2026-09-29 entry below), but it stays
+pinned. It is still how you inspect what Argo CD sees without the UI, e.g.
+`argocd cluster list --core` and `argocd app diff`. The CLI version must **track the Argo CD
+server exactly**, so a bump of the Argo CD chart is also a pin-list edit.
+
+---
+
+## 2026-09-29 — Spokes are registered with a declarative Secret, not `argocd cluster add`
+
+**Decision.** `scripts/register-spokes.sh` registers `dev` and `prod` with plain `kubectl`.
+It applies `clusters/argocd-manager.yaml` (ServiceAccount, cluster-admin role and binding,
+empty token Secret) to each spoke, then writes a `cluster-<env>` Secret into `mgmt`. That
+Secret carries server `https://k3d-<env>-server-0:6443`, label `env=<env>`, and the
+ServiceAccount's bearer token plus CA. BUILD-PLAN §4 describes the script as "cluster add
++ server URL override + labels". This is the same outcome by a different mechanism.
+
+**Why.** Tried against the pinned argocd v3.5.2, `argocd cluster add` fell short twice:
+
+1. **It cannot set the server URL.** `--cluster-endpoint` accepts only `kubeconfig`,
+   `kube-public` or `internal`, and the kubeconfig says `https://0.0.0.0:<port>`. The only
+   route to the in-network name is patching the Secret afterwards. The Secret's name is
+   derived from the *host* URL, so a later `--upsert` works against the patch.
+2. **In `--core` mode it stored the spoke's admin client certificate and key**, copied from
+   the kubeconfig, instead of `argocd-manager`'s token. It created the ServiceAccount and
+   then did not use it. Argo CD would have acted in each spoke as the k3s admin.
+
+The declarative Secret is the form Argo CD itself documents for declarative setup. It also
+gives stable names (`cluster-dev`, not `cluster-0.0.0.0-2641646974`), and re-runs are no-ops.
+
+**Credentials stay out of git.** `clusters/argocd-manager.yaml` holds no secret material;
+Kubernetes issues the token inside the spoke. The script streams it from the spoke through
+`jq` into a server-side apply in `mgmt`, so it never lands in a file, a shell variable, argv
+or the repo. Server-side apply matters here: client-side `kubectl apply` would copy the
+whole Secret, token included, into a `last-applied-configuration` annotation.
+
+**Verified.** The spoke API certificates already list `k3d-<env>-server-0` as a SAN, so TLS
+is verified (`insecure: false`). No SAN override was needed.
+
+**Revisit at:** Phase 9b. argocd-agent removes hub-to-spoke connections, and this script
+with them.
+
+---
+
+## 2026-09-29 — `bootstrap.sh` does not create clusters; `task up` does
+
+**Decision.** `scripts/bootstrap.sh` installs Argo CD in `mgmt` and applies the root app,
+nothing else. The network, caches, push registry and clusters stay in `Taskfile.yml`, where
+Phase 0 put them. `task up` runs them in order, then `bootstrap` and then `register`.
+BUILD-PLAN §4 annotates `bootstrap.sh` as "creates clusters, installs ONLY Argo CD".
+
+**Why.** The cluster steps already exist as idempotent, individually runnable tasks and were
+verified in Phase 0. Moving them into `bootstrap.sh` would spend its ~30-line budget on
+infrastructure that `lint-bootstrap.sh` does not police anyway. The script's line count
+should measure one thing: how much is installed outside git.
+
+---
+
+## 2026-09-29 — Sync waves do not order ApplicationSet-generated Applications
+
+**Reality check, not yet a decision.** BUILD-PLAN Phase 1 assigns sync waves across
+components: 0 = CRDs + cert-manager, 1 = istiod + ztunnel, 2 = platform, 3 = gateways +
+waypoints, 4 = apps. An `argocd.argoproj.io/sync-wave` annotation orders resources *within*
+one sync. The platform Applications are generated by an ApplicationSet, which creates all of
+them at once. No parent sync walks them in wave order, so the annotation would sit on the
+generated Applications and do nothing.
+
+**What is in place.** Each entry in `platform/<env>/versions.yaml` carries `wave`, and the
+ApplicationSet stamps it on the generated Application as a **label**. It is not an
+annotation that would look like it works. Phase 1 has a single component, so nothing needs
+ordering yet.
+
+**What will need deciding** when the second wave arrives (istiod, Phase 5, which needs
+Gateway API CRDs first): either ApplicationSet **progressive syncs** (`RollingSync` steps
+keyed on the `wave` label, enabled in `platform/argocd-values.yaml`), or rely on
+self-heal retries until the dependencies exist. Progressive sync is configuration of a
+component already installed, not a new one. Decide then, with the real failure in front of you.

@@ -1,0 +1,47 @@
+# cert-manager on the DEV spoke. Chart version: platform/dev/versions.yaml.
+#
+# Every image is pinned by its manifest-list INDEX digest, verified to carry both
+# linux/arm64 (the lab) and linux/amd64 (CI runners). A per-arch digest would
+# pull here and fail `no match for platform` in CI.
+#
+# THESE DIGESTS BELONG TO v1.21.1. A chart bump in versions.yaml without new
+# digests here runs the new chart's templates against the old binaries.
+
+crds:
+  enabled: true
+
+# Lab sizing: one replica each, explicit requests and limits on every container.
+image:
+  digest: sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a  # controller v1.21.1
+resources:
+  requests: { cpu: 10m,  memory: 64Mi }
+  limits:   { cpu: 200m, memory: 256Mi }
+
+webhook:
+  image:
+    digest: sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42  # webhook v1.21.1
+  resources:
+    requests: { cpu: 10m,  memory: 32Mi }
+    limits:   { cpu: 100m, memory: 128Mi }
+
+cainjector:
+  image:
+    digest: sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98  # cainjector v1.21.1
+  # cainjector watches Secrets cluster-wide, so it grows with the Secret count.
+  # This is the one to raise first if it OOMs once ESO starts writing Secrets.
+  resources:
+    requests: { cpu: 10m,  memory: 64Mi }
+    limits:   { cpu: 200m, memory: 256Mi }
+
+# Not a Deployment: the controller passes this image to the pods it creates for
+# ACME HTTP-01 challenges. Pinned anyway, because an unpinned reference is still
+# a floating tag even when it is only a flag value.
+acmesolver:
+  image:
+    digest: sha256:dbc7cc1354f603918e7c5af7f55a0a620537394452c93a565bde75c6f48e8837  # acmesolver v1.21.1
+
+# A Helm post-install Job that only checks the API came up. Under Argo CD it
+# would run as a hook on every sync. Argo CD's own health checks already answer
+# that question, so this is one image and one Job fewer.
+startupapicheck:
+  enabled: false
