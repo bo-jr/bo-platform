@@ -7,10 +7,7 @@ This file is the mechanical setup, and the honest status of where the build is.
 
 ## Status — last updated 2026-09-29
 
-**Phase 0 is complete and verified.** All four acceptance criteria pass.
-**Phase 1 is in progress:** Argo CD v3.5.2 (chart 10.9.0) is installed in `mgmt`, all six
-pods Running. Not built yet: `bootstrap.sh`, `lint-bootstrap.sh`, spoke registration, the
-root app, and the platform ApplicationSet.
+**Phase 0 and Phase 1 are complete and verified.** All acceptance criteria pass.
 
 | | |
 |---|---|
@@ -21,6 +18,9 @@ root app, and the platform ApplicationSet.
 | Container runtime (MacBook M1) | ✅ Docker Desktop 4.89.0, engine 29.7.2, 36 GiB / 100 GiB |
 | 1Password vault | ✅ `gitops-lab`, 7 items; Phase 0 secrets filled |
 | Clusters, registry, caches | ✅ 3 clusters, 5 registries, k3s v1.36.4+k3s1 |
+| Argo CD | ✅ v3.5.2 (chart 10.9.0) in `mgmt` via `task bootstrap`; root app Synced/Healthy |
+| Spokes registered | ✅ `cluster-dev` / `cluster-prod`, in-network URLs, argocd-manager token, TLS verified |
+| Platform components | ✅ cert-manager: dev **v1.21.2**, prod **v1.21.1** |
 
 **Phase 0 acceptance, as measured 2026-09-12:**
 
@@ -41,8 +41,29 @@ TOK=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=rep
 curl -s -I -H "Authorization: Bearer $TOK" https://registry-1.docker.io/v2/ratelimitpreview/test/manifests/latest | grep -i ratelimit-remaining
 ```
 
-**Next action:** finish Phase 1. Put the by-hand Argo CD install into `bootstrap.sh`,
-register the spokes, and build the root app plus the matrix ApplicationSet. See BUILD-PLAN §5.
+**Phase 1 acceptance, as measured 2026-09-29:**
+
+| Criterion | Result |
+|---|---|
+| `kubectl delete` a platform component → Argo CD restores it | ✅ deleted `deploy/cert-manager` in dev; self-heal recreated it (new UID) in **~1s**, back to Synced/Healthy |
+| A version bump in `platform/dev/versions.yaml` upgrades dev *only* | ✅ #6 bumped dev to v1.21.2. Dev rolled to the new digests (controller `70f532fd…`); prod pods kept the v1.21.1 digests and never restarted |
+
+The second one is worth reading off the Applications themselves. At the same git commit
+(`ae823ce`), `cert-manager-dev` reports revisions `[v1.21.2, ae823ce]` and
+`cert-manager-prod` reports `[v1.21.1, ae823ce]`. One ApplicationSet, one commit, two
+versions. The only thing that differs is which `versions.yaml` each cluster's `env` label
+selects:
+
+```bash
+kubectl --context k3d-mgmt -n argocd get applications -o custom-columns='NAME:.metadata.name,SYNC:.status.sync.status,HEALTH:.status.health.status,REVS:.status.sync.revisions'
+```
+
+Also verified along the way: `task bootstrap` re-runs against a live `mgmt` are safe (Helm
+revision bumps, zero pod restarts), `register-spokes.sh` re-runs are no-ops, and
+`lint-bootstrap.sh` fails on each of four seeded violations.
+
+**Next action:** Phase 2 — the three services, the shared chart, and the `sandbox`
+namespace. See BUILD-PLAN §5. New session.
 
 ---
 

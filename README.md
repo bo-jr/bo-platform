@@ -53,5 +53,5 @@ the root app-of-apps.
 
 ## Status
 
-Phase 0 complete; Phase 1 in progress (Argo CD running in `mgmt`). See [`SETUP.md`](SETUP.md)
-for the current status table.
+Phases 0 and 1 complete: three clusters, Argo CD in `mgmt` managing both spokes, and
+platform charts promoted dev → prod by PR. See [`SETUP.md`](SETUP.md) for the status table.
