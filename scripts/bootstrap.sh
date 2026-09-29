@@ -16,7 +16,7 @@ ARGOCD_CHART=10.9.0
 helm upgrade --install argocd argo-cd \
   --repo https://argoproj.github.io/argo-helm --version "$ARGOCD_CHART" \
   --kube-context "$CTX" --namespace argocd --create-namespace \
-  --values platform/argocd-values.yaml
+  --values platform/argocd-values.yaml >/dev/null   # chart NOTES are noise here
 
 # Not `helm --wait`: its semantics changed in Helm 4. Ask Kubernetes directly.
 kubectl --context "$CTX" -n argocd wait deploy --all --for=condition=Available --timeout=300s
