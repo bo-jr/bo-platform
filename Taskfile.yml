@@ -48,15 +48,15 @@ tasks:
   # -------------------------------------------------------------------------
 
   up:
-    desc: "Bring the lab up: network -> caches -> push registry -> three clusters"
+    desc: "Bring the lab up: network -> caches -> registry -> clusters -> Argo CD -> spokes"
     cmds:
       - task: net
       - task: caches
       - task: registry
       - task: clusters
+      - task: bootstrap
+      - task: register
       - task: status
-      - echo ""
-      - echo "Phase 1 adds Argo CD and the root app to this target."
 
   down:
     desc: "Delete all three clusters. KEEPS the push registry and the caches."
@@ -252,6 +252,22 @@ tasks:
             --registry-use "k3d-registry:{{.PUSH_PORT}}"
           echo "created cluster $c"
         done
+
+  bootstrap:
+    desc: "Install Argo CD in mgmt and apply the root app — the only non-GitOps install."
+    deps: [lint]
+    cmds:
+      - ./scripts/bootstrap.sh
+
+  register:
+    desc: "Register dev and prod with Argo CD (idempotent). No credentials touch git."
+    cmds:
+      - ./scripts/register-spokes.sh
+
+  lint:
+    desc: "Assert bootstrap.sh installs only Argo CD and applies only the root app."
+    cmds:
+      - ./scripts/lint-bootstrap.sh
 
   # -------------------------------------------------------------------------
   # GitHub

@@ -1,0 +1,50 @@
+# Argo CD's identity in each spoke. Applied to dev and prod by
+# scripts/register-spokes.sh — it has to exist before Argo CD can reach the
+# spoke, so it cannot be delivered BY Argo CD.
+#
+# Nothing here is secret. The token Secret below is declared empty; Kubernetes
+# fills in the token inside the cluster. register-spokes.sh reads it from there
+# and streams it into mgmt without it ever touching disk or git.
+#
+# Names match what `argocd cluster add` would create, so either path converges
+# on the same objects.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-manager
+  namespace: kube-system
+---
+apiVersion: v1
+kind: Secret
+type: kubernetes.io/service-account-token
+metadata:
+  name: argocd-manager-long-lived-token
+  namespace: kube-system
+  annotations:
+    kubernetes.io/service-account.name: argocd-manager
+---
+# Argo CD manages everything in a spoke, CRDs and cluster-scoped objects
+# included, so this is cluster-admin by design.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: argocd-manager-role
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["*"]
+  - nonResourceURLs: ["*"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: argocd-manager-role-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: argocd-manager-role
+subjects:
+  - kind: ServiceAccount
+    name: argocd-manager
+    namespace: kube-system

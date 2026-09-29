@@ -53,4 +53,5 @@ the root app-of-apps.
 
 ## Status
 
-Phase 0 not started — no clusters exist yet. See [`SETUP.md`](SETUP.md).
+Phase 0 complete; Phase 1 in progress (Argo CD running in `mgmt`). See [`SETUP.md`](SETUP.md)
+for the current status table.
