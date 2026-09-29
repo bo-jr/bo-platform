@@ -12,3 +12,12 @@
   version: v1.21.2
   namespace: cert-manager
   wave: "0"
+# CloudNativePG operator (Phase 2). Its CRDs ship inside this same chart and
+# Application, so no cross-Application ordering is needed. The catalog `Cluster`
+# lives in databases/<env>/, not here. See DECISIONS.md 2026-09-29.
+- component: cloudnative-pg
+  repoURL: https://cloudnative-pg.github.io/charts
+  chart: cloudnative-pg
+  version: 0.29.1
+  namespace: cnpg-system
+  wave: "2"
