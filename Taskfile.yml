@@ -370,8 +370,14 @@ tasks:
         # The service repo pins the chart; this reads the pin rather than
         # choosing a version. The chart refuses to render on a mismatch.
         ver=$(awk '/^chartVersion:/ { print $2; exit }' "$values")
+        # Pull first, render the local archive. Helm 4 prints "Pulled:" and
+        # "Digest:" on STDOUT when `helm template` fetches an OCI chart itself,
+        # and has no flag to silence it; those lines would be the first YAML
+        # document in the manifest stream. See DECISIONS.md 2026-09-29.
+        chart=$(mktemp -d); trap 'rm -rf "$chart"' EXIT
+        helm pull {{.SERVICE_CHART}} --version "$ver" -d "$chart" >/dev/null
         # Extra args override chart-values, e.g. --set-string env.FAILURE_RATE=0.5
-        helm template "$svc" {{.SERVICE_CHART}} --version "$ver" -f "$values" \
+        helm template "$svc" "$chart"/*.tgz -f "$values" \
           --set image.repository="k3d-registry:5000/bo-$svc" \
           --set image.digest="$(cat ".sandbox/$svc.digest")" "$@" \
           | kubectl --context k3d-dev -n sandbox apply --server-side --field-manager=sandbox -f -
