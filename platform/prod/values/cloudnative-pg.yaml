@@ -1,0 +1,36 @@
+# CloudNativePG operator on the PROD spoke. Chart version: platform/prod/versions.yaml.
+#
+# Every image is pinned by its manifest-list INDEX digest, verified to carry both
+# linux/arm64 (the lab) and linux/amd64 (CI runners).
+#
+# THESE DIGESTS BELONG TO chart 0.29.1 / operator 1.30.1. A chart bump in
+# versions.yaml without new digests here runs the new chart against old binaries.
+
+# The chart has no digest field: it composes `repository:tag`. Unlike the Argo CD
+# chart (DECISIONS.md 2026-09-12), `tag` is used only in `image:` and in the
+# OPERATOR_IMAGE_NAME env, never in a label, so `tag@digest` renders a valid,
+# digest-pinned reference. The operator injects OPERATOR_IMAGE_NAME into every
+# Postgres pod as its bootstrap init container, so that inherits the pin too.
+image:
+  tag: "1.30.1@sha256:923c267ec29636db3bee20f993d0ec4973fa22998e1adad37da79e4d32b5bc07"
+
+crds:
+  create: true
+
+config:
+  data:
+    # The operand image for any Cluster that does not set spec.imageName. The
+    # operator's built-in default is a TAG (18.6-system-trixie); this is that
+    # exact image, pinned. Clusters set imageName explicitly as well.
+    POSTGRES_IMAGE_NAME: "ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:99bc64e413d59b017d169ce2ff25746f1d68c5d7210a19f12c0464a109216ee1"
+
+# Lab sizing: one replica, explicit requests and limits.
+resources:
+  requests: { cpu: 20m,  memory: 96Mi }
+  limits:   { cpu: 500m, memory: 384Mi }
+
+# PodMonitor needs the Prometheus Operator CRDs, which arrive in Phase 4.
+monitoring:
+  podMonitorEnabled: false
+  grafanaDashboard:
+    create: false
