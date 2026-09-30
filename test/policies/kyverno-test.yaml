@@ -1,0 +1,31 @@
+# Expected decisions for every fixture in resources.yaml. Run: task policies:test
+#
+# Deliberately NOT under policies/. `kyverno apply policies/` recurses, and a
+# single non-policy YAML (this Test kind) makes it skip the whole directory,
+# apply nothing and exit 0 — logged only at -v 3. See DECISIONS.md 2026-09-30.
+apiVersion: cli.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: lab-policies
+policies:
+  - ../../policies/require-image-digest.yaml
+  - ../../policies/disallow-floating-tags.yaml
+  - ../../policies/require-requests-limits.yaml
+resources:
+  - resources.yaml
+results:
+  # require-image-digest
+  - { isValidatingPolicy: true, policy: require-image-digest, kind: Deployment, result: pass, resources: [good, latest-beside-digest, no-limits, no-cpu-limit-in-init] }
+  - { isValidatingPolicy: true, policy: require-image-digest, kind: Pod,        result: pass, resources: [port-and-full-version] }
+  - { isValidatingPolicy: true, policy: require-image-digest, kind: Deployment, result: fail, resources: [tag-only, partial-version, bare-name] }
+  - { isValidatingPolicy: true, policy: require-image-digest, kind: CronJob,    result: fail, resources: [init-tag] }
+  # disallow-floating-tags
+  - { isValidatingPolicy: true, policy: disallow-floating-tags, kind: Deployment, result: pass, resources: [good, tag-only, no-limits, no-cpu-limit-in-init] }
+  - { isValidatingPolicy: true, policy: disallow-floating-tags, kind: Pod,        result: pass, resources: [port-and-full-version] }
+  - { isValidatingPolicy: true, policy: disallow-floating-tags, kind: Deployment, result: fail, resources: [latest-beside-digest, partial-version, bare-name] }
+  - { isValidatingPolicy: true, policy: disallow-floating-tags, kind: CronJob,    result: fail, resources: [init-tag] }
+  # require-requests-limits
+  - { isValidatingPolicy: true, policy: require-requests-limits, kind: Deployment, result: pass, resources: [good, tag-only, latest-beside-digest, partial-version, bare-name] }
+  - { isValidatingPolicy: true, policy: require-requests-limits, kind: Pod,        result: pass, resources: [port-and-full-version] }
+  - { isValidatingPolicy: true, policy: require-requests-limits, kind: CronJob,    result: pass, resources: [init-tag] }
+  - { isValidatingPolicy: true, policy: require-requests-limits, kind: Deployment, result: fail, resources: [no-limits, no-cpu-limit-in-init] }

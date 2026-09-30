@@ -389,6 +389,21 @@ tasks:
       - kubectl --context k3d-dev delete namespace sandbox --ignore-not-found
 
   # -------------------------------------------------------------------------
+  # Policy (Phase 3). The same Kyverno policies run in service CI, in
+  # bo-deploy's `validate` check, here, and at admission from Phase 7.
+  # -------------------------------------------------------------------------
+
+  policies:test:
+    desc: "Run the Kyverno policy test cases in test/policies."
+    cmds:
+      - kyverno test test/policies --remove-color --warnings-as-errors
+
+  policies:check:
+    desc: "Policy-check rendered manifests. Usage: task policies:check -- <file>..."
+    cmds:
+      - ./scripts/policy-check.sh {{.CLI_ARGS}}
+
+  # -------------------------------------------------------------------------
   # GitHub
   # -------------------------------------------------------------------------
 
@@ -448,6 +463,48 @@ tasks:
               --jq '"created ruleset \(.id)"' 2>&1 | tail -1
           fi
         done
+
+  repos:protect:deploy-checks:
+    desc: "bo-deploy only: require the `validate` check on main (idempotent)."
+    vars:
+      # Check-run name as GitHub reports it for bo-deploy's validate.yml:
+      # "<caller job> / <reusable workflow job>". integration_id 15368 is the
+      # GitHub Actions app, so only an Actions run can satisfy it — not a
+      # commit status anyone with the token could post.
+      CHECK: validate / rendered
+    cmds:
+      - |
+        set -eu
+        # Separate from main-protection on purpose: a required check on a repo
+        # that never runs it would block every merge there. And separate from
+        # `repos:protect`, which would also start protecting bo-platform.
+        #
+        # Without a required check, `gh pr merge --auto` merges a PR the moment
+        # it opens, so auto-merge would gate nothing (DECISIONS.md 2026-09-30).
+        payload=$(mktemp); trap 'rm -f "$payload"' EXIT
+        cat > "$payload" <<JSON
+        {
+          "name": "deploy-checks",
+          "target": "branch",
+          "enforcement": "active",
+          "conditions": { "ref_name": { "include": ["~DEFAULT_BRANCH"], "exclude": [] } },
+          "rules": [
+            { "type": "required_status_checks",
+              "parameters": {
+                "strict_required_status_checks_policy": false,
+                "do_not_enforce_on_create": false,
+                "required_status_checks": [ { "context": "{{.CHECK}}", "integration_id": 15368 } ]
+              }
+            }
+          ]
+        }
+        JSON
+        id=$(gh api repos/bo-jr/bo-deploy/rulesets --jq '.[] | select(.name=="deploy-checks") | .id' | head -1)
+        if [ -n "$id" ]; then
+          gh api -X PUT "repos/bo-jr/bo-deploy/rulesets/$id" --input "$payload" --jq '"updated ruleset \(.id)"'
+        else
+          gh api -X POST repos/bo-jr/bo-deploy/rulesets --input "$payload" --jq '"created ruleset \(.id)"'
+        fi
 
   repos:protect:show:
     desc: "Print the current ruleset on each repo without changing anything."

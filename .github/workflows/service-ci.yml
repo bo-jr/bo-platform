@@ -1,0 +1,484 @@
+# The one CI workflow for storefront, catalog and pricing (BUILD-PLAN Phase 3).
+#
+# Each service repo calls it from .github/workflows/ci.yml, pinned by commit SHA:
+#
+#   uses: bo-jr/bo-platform/.github/workflows/service-ci.yml@<40-hex sha>
+#
+# Pull request:  check                         (test + policy, nothing published)
+# Push to main:  check -> build (amd64, arm64 on native runners) -> publish
+#                (index by digest, cosign, provenance) -> promote-dev (rolling
+#                PR in bo-deploy, auto-merged on its required `validate` check)
+#
+# Everything this workflow runs from bo-platform (toolchain script, policies,
+# render script, BuildKit pin) is checked out at job.workflow_sha: the same
+# commit as this file, so one SHA in the caller pins all of it.
+#
+# Actions are first-party only, pinned by full commit SHA. The rest is plain
+# shell. Secrets reach commands through env and stdin, never argv.
+name: service-ci
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: In-cluster name, WITHOUT the bo- prefix (storefront, catalog, pricing).
+        type: string
+        required: true
+      merge-timeout-minutes:
+        description: How long promote-dev waits for the bo-deploy PR to merge before failing.
+        type: number
+        default: 15
+    secrets:
+      deploy-token:
+        description: Fine-grained PAT scoped to bo-deploy (Contents RW, Pull requests RW). Push runs only.
+        required: false
+
+permissions: {}
+
+env:
+  SERVICE: ${{ inputs.service }}
+  IMAGE: ghcr.io/${{ github.repository }}
+  DEPLOY_REPO: bo-jr/bo-deploy
+  GOTOOLCHAIN: local
+  GOFLAGS: -mod=readonly
+  GO111MODULE: "on"
+  GOWORK: "off"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  check:
+    name: test + policy
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Check out ${{ github.repository }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+          persist-credentials: false
+
+      - name: Check out bo-platform at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Pinned toolchain
+        run: |
+          platform/scripts/bootstrap-toolchain.sh --only "go helm kyverno jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$HOME/.local/go/bin" >> "$GITHUB_PATH"
+
+      - name: Repo, name and image agree
+        working-directory: src
+        run: |
+          fail() { echo "::error::$*"; exit 1; }
+          [[ "$SERVICE" =~ ^[a-z][a-z0-9-]*$ ]] || fail "service '$SERVICE' is not a bare in-cluster name"
+          [ "$GITHUB_REPOSITORY" = "bo-jr/bo-$SERVICE" ] || fail "repo $GITHUB_REPOSITORY does not match service '$SERVICE'"
+          name=$(awk '/^name:/ { print $2; exit }' chart-values.yaml)
+          repo=$(awk '/^image:/ { i = 1; next } i && /^  repository:/ { print $2; exit }' chart-values.yaml)
+          digest=$(awk '/^image:/ { i = 1; next } i && /^  digest:/ { print $2; exit }' chart-values.yaml)
+          [ "$name" = "$SERVICE" ] || fail "chart-values name '$name' != '$SERVICE' (the bo- prefix stops at the repo boundary)"
+          [ "$repo" = "$IMAGE" ] || fail "chart-values image.repository '$repo' != '$IMAGE'"
+          [ "$digest" = '""' ] || fail "image.digest must stay empty in source; CI supplies it at render time"
+          echo "service=$SERVICE image=$IMAGE"
+
+      - name: go vet + go test
+        working-directory: src
+        run: |
+          go vet ./...
+          go test ./...
+
+      - name: Render with a placeholder digest, then policy-check it
+        run: |
+          ts=$(TZ=UTC git -C src log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
+          platform/scripts/render-service.sh src "sha256:$(printf '0%.0s' {1..64})" "$ts" > rendered.yaml
+          platform/scripts/policy-check.sh rendered.yaml
+
+  # ---------------------------------------------------------------------------
+  build:
+    name: build (${{ matrix.arch }})
+    timeout-minutes: 30
+    needs: check
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { arch: amd64, runner: ubuntu-24.04 }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Runner is really ${{ matrix.arch }}
+        run: |
+          m=$(uname -m); echo "runner: $RUNNER_OS $m ($RUNNER_ARCH), image $ImageOS $ImageVersion"
+          case "$m/$ARCH" in x86_64/amd64|aarch64/arm64) ;; *) echo "::error::expected $ARCH, got $m"; exit 1 ;; esac
+
+      - name: Check out ${{ github.repository }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+          persist-credentials: false
+
+      - name: Check out bo-platform at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Pinned toolchain
+        run: |
+          platform/scripts/bootstrap-toolchain.sh --only "jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # The same BuildKit the laptop builds with: Taskfile.yml vars is the
+      # authority for that pin (DECISIONS.md 2026-09-29). Rootful, no cache
+      # (DECISIONS.md 2026-09-30).
+      - name: Pinned BuildKit builder
+        run: |
+          img=$(awk '/^  BUILDKIT_IMAGE:/ { print $2; exit }' platform/Taskfile.yml)
+          [[ "$img" =~ ^docker\.io/moby/buildkit@sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest-pinned BUILDKIT_IMAGE in Taskfile.yml"; exit 1; }
+          docker buildx create --name ci --driver docker-container --driver-opt "image=$img" --bootstrap >/dev/null
+          docker buildx inspect ci | sed -n '1,/^$/p'
+
+      # One platform per native runner. No BuildKit provenance or SBOM: the
+      # provenance is GitHub's (publish job), and leaving these off keeps each
+      # push a plain image manifest rather than a one-entry index.
+      - name: Build linux/${{ matrix.arch }} and push it by digest
+        id: build
+        run: |
+          docker buildx build --builder ci --platform "linux/$ARCH" \
+            --provenance=false --sbom=false \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true" \
+            --metadata-file meta.json src
+          d=$(jq -r '."containerimage.digest"' meta.json)
+          mt=$(jq -r '."containerimage.descriptor".mediaType' meta.json)
+          [[ "$d" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest in build metadata"; exit 1; }
+          [ "$mt" = application/vnd.oci.image.manifest.v1+json ] || { echo "::error::expected one image manifest, got $mt"; exit 1; }
+          echo "linux/$ARCH $IMAGE@$d"
+          echo "digest=$d" >> "$GITHUB_OUTPUT"
+          mkdir -p digests && printf '%s\n' "$d" > "digests/$ARCH"
+
+      # Run what was pushed, on its own architecture. catalog refuses to start
+      # without DATABASE_URL; its pool is lazy, so an unreachable one is fine.
+      - name: Smoke-test the pushed image natively
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          docker run -d --name smoke -p 8080:8080 \
+            -e DATABASE_URL=postgres://smoke@127.0.0.1:1/smoke "$IMAGE@$DIGEST" >/dev/null
+          arch=$(docker image inspect "$IMAGE@$DIGEST" --format '{{.Os}}/{{.Architecture}}')
+          [ "$arch" = "linux/$ARCH" ] || { echo "::error::image is $arch"; exit 1; }
+          for _ in $(seq 30); do
+            if curl -fsS localhost:8080/healthz; then docker rm -f smoke >/dev/null; exit 0; fi
+            sleep 1
+          done
+          docker logs smoke; echo "::error::/healthz never answered"; exit 1
+
+      - name: Hand the digest to the publish job
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  publish:
+    name: index + sign + provenance
+    timeout-minutes: 15
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    outputs:
+      digest: ${{ steps.index.outputs.digest }}
+    steps:
+      - name: Check out bo-platform at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Pinned toolchain
+        run: |
+          platform/scripts/bootstrap-toolchain.sh --only "cosign gh jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Collect the per-arch digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Log in to ghcr.io
+        env:
+          TOKEN: ${{ github.token }}
+        run: printf '%s' "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      # `imagetools create` will not push without a tag, and no tag should
+      # exist (DECISIONS.md 2026-09-30). So: build the index with --dry-run, PUT
+      # it by its own digest, then read it back by digest and check it.
+      - name: Create the index and push it by digest
+        id: index
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          amd=$(cat digests/amd64); arm=$(cat digests/arm64)
+          docker buildx imagetools create --dry-run \
+            --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
+            "$IMAGE@$amd" "$IMAGE@$arm" > index.json
+          digest="sha256:$(sha256sum index.json | cut -d' ' -f1)"
+          mt=$(jq -r .mediaType index.json)
+          [ "$mt" = application/vnd.oci.image.index.v1+json ] || { echo "::error::not an OCI index: $mt"; exit 1; }
+
+          repo=${IMAGE#ghcr.io/}
+          bearer=$(printf 'user = "%s:%s"\n' "$GITHUB_ACTOR" "$TOKEN" \
+            | curl -fsS -K - "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull,push" | jq -r .token)
+          echo "::add-mask::$bearer"
+          auth() { printf 'header = "Authorization: Bearer %s"\n' "$bearer"; }
+          auth | curl -fsS -K - -X PUT -H "Content-Type: $mt" --data-binary @index.json \
+            "https://ghcr.io/v2/$repo/manifests/$digest" -o /dev/null
+          auth | curl -fsS -K - -H "Accept: $mt" "https://ghcr.io/v2/$repo/manifests/$digest" -o got.json
+
+          [ "sha256:$(sha256sum got.json | cut -d' ' -f1)" = "$digest" ] || { echo "::error::registry returned different bytes"; exit 1; }
+          jq -e --arg a "$amd" --arg b "$arm" '
+            ([.manifests[] | "\(.platform.os)/\(.platform.architecture)=\(.digest)"] | sort)
+              == ["linux/amd64=\($a)", "linux/arm64=\($b)"]' got.json >/dev/null \
+            || { echo "::error::index is not exactly linux/amd64 + linux/arm64"; jq . got.json; exit 1; }
+          echo "$IMAGE@$digest  (OCI index: linux/amd64 + linux/arm64)"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Sign with cosign (keyless, GitHub OIDC)
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+        run: cosign sign --yes "$IMAGE@$DIGEST"
+
+      - name: Build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.index.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      # Verify with the same identity bo-deploy's `validate` check will demand.
+      - name: Verify the signature and the provenance
+        env:
+          DIGEST: ${{ steps.index.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          SIGNER: https://github.com/${{ job.workflow_ref }}
+          SIGNER_WORKFLOW: ${{ job.workflow_repository }}/${{ job.workflow_file_path }}
+        run: |
+          echo "signer: $SIGNER"
+          cosign verify "$IMAGE@$DIGEST" \
+            --certificate-identity "$SIGNER" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY" >/dev/null
+          echo "cosign verify: ok"
+          gh attestation verify "oci://$IMAGE@$DIGEST" \
+            --repo "$GITHUB_REPOSITORY" --signer-workflow "$SIGNER_WORKFLOW"
+
+  # ---------------------------------------------------------------------------
+  promote-dev:
+    name: promote to dev
+    timeout-minutes: 45
+    needs: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      deployments: write
+    # One promotion per service at a time, and none dropped: the default queue
+    # keeps a single pending run and evicts older ones. GitHub does not
+    # guarantee order either, hence the tip-of-main step (DECISIONS.md 2026-09-30).
+    concurrency:
+      group: promote-dev-${{ inputs.service }}
+      cancel-in-progress: false
+      queue: max
+    env:
+      DIGEST: ${{ needs.publish.outputs.digest }}
+      TIMEOUT_MINUTES: ${{ inputs.merge-timeout-minutes }}
+    steps:
+      - name: Check out bo-platform at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Pinned toolchain
+        run: |
+          platform/scripts/bootstrap-toolchain.sh --only "helm kyverno gh jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Still the tip of main?
+        id: tip
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tip=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$tip" = "$GITHUB_SHA" ]; then
+            echo "promote=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::superseded by ${tip:0:7}; its own run promotes. ${GITHUB_SHA:0:7} is built and signed but not promoted."
+            echo "promote=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Check out ${{ github.repository }}
+        if: steps.tip.outputs.promote == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: src
+          persist-credentials: false
+
+      - name: Render and policy-check
+        if: steps.tip.outputs.promote == 'true'
+        id: render
+        run: |
+          ts=$(TZ=UTC git -C src log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
+          platform/scripts/render-service.sh src "$DIGEST" "$ts" > manifests.yaml 2> chart.txt
+          cat chart.txt
+          platform/scripts/policy-check.sh manifests.yaml
+          echo "timestamp=$ts" >> "$GITHUB_OUTPUT"
+          echo "chart=$(awk '{ print $3 " (" $4 ")" }' chart.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: Open or update the rolling dev PR
+        if: steps.tip.outputs.promote == 'true'
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.deploy-token }}
+          TS: ${{ steps.render.outputs.timestamp }}
+          CHART: ${{ steps.render.outputs.chart }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$GH_TOKEN" ] || { echo "::error::deploy-token is empty: set the BO_DEPLOY_TOKEN Actions secret"; exit 1; }
+          short=${GITHUB_SHA:0:7} branch="dev/$SERVICE" dir="rendered/dev/$SERVICE"
+
+          gh auth setup-git   # git authenticates through gh, which reads GH_TOKEN
+          git clone -q --depth 1 "https://github.com/$DEPLOY_REPO.git" deploy
+          cd deploy
+          git switch -q -c "$branch"
+          mkdir -p "$dir" && cp ../manifests.yaml "$dir/manifests.yaml"
+          git add "$dir"
+          if git diff --cached --quiet; then
+            echo "::notice::rendered/dev/$SERVICE on main already matches; nothing to promote"
+            echo "number=" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+
+          email="$GITHUB_ACTOR_ID+$GITHUB_ACTOR@users.noreply.github.com"
+          git -c user.name="bo-$SERVICE CI" -c user.email="$email" commit -q \
+            -m "dev: $SERVICE $short" -m "$IMAGE@$DIGEST" -m "Source: $GITHUB_REPOSITORY@$GITHUB_SHA"
+          git push -q --force origin "$branch"
+
+          cat > ../body.md <<EOF
+          Rolling **dev** promotion for \`$SERVICE\`, opened by CI. Rendered by \`helm template\`; never edit \`rendered/\` by hand.
+
+          | | |
+          |---|---|
+          | Source | [$GITHUB_REPOSITORY@$short](https://github.com/$GITHUB_REPOSITORY/commit/$GITHUB_SHA) |
+          | Commit timestamp | \`$TS\` |
+          | Image | \`$IMAGE@$DIGEST\` (OCI index, linux/amd64 + linux/arm64) |
+          | Chart | \`$CHART\` |
+          | Built by | [run $GITHUB_RUN_ID]($RUN_URL) |
+
+          Verify:
+
+          \`\`\`bash
+          cosign verify $IMAGE@$DIGEST --certificate-identity-regexp '^https://github.com/bo-jr/bo-platform/\.github/workflows/service-ci\.yml@[0-9a-f]{40}$' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+          \`\`\`
+
+          \`\`\`bash
+          gh attestation verify oci://$IMAGE@$DIGEST --repo $GITHUB_REPOSITORY --signer-workflow bo-jr/bo-platform/.github/workflows/service-ci.yml
+          \`\`\`
+          EOF
+
+          title="dev: $SERVICE $short"
+          n=$(gh pr list -R "$DEPLOY_REPO" --head "$branch" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$n" ]; then
+            gh pr edit "$n" -R "$DEPLOY_REPO" --title "$title" --body-file ../body.md >/dev/null
+            echo "force-pushed $branch; updated PR #$n"
+          else
+            url=$(gh pr create -R "$DEPLOY_REPO" --base main --head "$branch" --title "$title" --body-file ../body.md)
+            n=${url##*/}; echo "opened PR #$n"
+          fi
+          # Merges only once the required `validate` check passes. On a PR that
+          # already had auto-merge on, re-enabling may be refused; that is fine
+          # as long as it is still on.
+          gh pr merge "$n" -R "$DEPLOY_REPO" --auto --squash \
+            || gh pr view "$n" -R "$DEPLOY_REPO" --json autoMergeRequest --jq '.autoMergeRequest != null' | grep -qx true \
+            || { echo "::error::could not enable auto-merge on $DEPLOY_REPO#$n"; exit 1; }
+          echo "number=$n" >> "$GITHUB_OUTPUT"
+
+      # A dev PR whose checks fail would otherwise sit in bo-deploy forever:
+      # nothing changed, so Argo CD says nothing. Fail here instead, on the repo
+      # that is being watched (BUILD-PLAN Phase 3).
+      - name: Wait for the dev PR to merge
+        if: steps.pr.outputs.number != ''
+        id: merged
+        env:
+          GH_TOKEN: ${{ secrets.deploy-token }}
+          N: ${{ steps.pr.outputs.number }}
+        run: |
+          deadline=$(( $(date +%s) + TIMEOUT_MINUTES * 60 ))
+          while :; do
+            read -r state oid < <(gh pr view "$N" -R "$DEPLOY_REPO" --json state,mergeCommit \
+              --jq '"\(.state) \(.mergeCommit.oid // "-")"')
+            case "$state" in
+              MERGED) echo "PR #$N merged as ${oid:0:7}"; echo "commit=$oid" >> "$GITHUB_OUTPUT"; exit 0 ;;
+              CLOSED) echo "::error::$DEPLOY_REPO#$N was closed without merging"; exit 1 ;;
+            esac
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              gh pr checks "$N" -R "$DEPLOY_REPO" || true
+              echo "::error::$DEPLOY_REPO#$N did not merge within $TIMEOUT_MINUTES minutes"; exit 1
+            fi
+            sleep 15
+          done
+
+      # in_progress: merged into bo-deploy, not yet proven healthy in dev. The
+      # promoter (after Phase 7) marks it success or failure from the live
+      # workload (DECISIONS.md 2026-09-30). SHAs and digests live here, never
+      # in a metric label.
+      - name: Record a GitHub Deployment for dev
+        if: steps.merged.outputs.commit != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          N: ${{ steps.pr.outputs.number }}
+          COMMIT: ${{ steps.merged.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          id=$(jq -n --arg sha "$GITHUB_SHA" --arg d "$DIGEST" --arg pr "$DEPLOY_REPO#$N" --arg c "$COMMIT" '{
+                ref: $sha, environment: "dev", auto_merge: false, required_contexts: [],
+                description: "\($d[0:19]) via \($pr)",
+                payload: { digest: $d, bo_deploy_pr: $pr, bo_deploy_commit: $c } }' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          jq -n --arg log "$RUN_URL" --arg env "https://github.com/$DEPLOY_REPO/commit/$COMMIT" '{
+                state: "in_progress", log_url: $log, environment_url: $env,
+                description: "merged into bo-deploy; health not yet verified" }' \
+            | gh api -X POST "repos/$GITHUB_REPOSITORY/deployments/$id/statuses" --input - --jq .state
+          echo "deployment $id: dev in_progress"

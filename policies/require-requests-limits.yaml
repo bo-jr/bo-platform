@@ -1,0 +1,42 @@
+# Every container states its CPU and memory requests AND limits.
+#
+# The lab's "never at default resources" rule (CLAUDE.md), as a policy. The
+# service chart already refuses to render without them; this catches anything
+# that did not come through the chart. Runs in CI first and at admission from
+# Phase 7.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: require-requests-limits
+  annotations:
+    policies.kyverno.io/title: Requests and limits are explicit
+    policies.kyverno.io/description: >-
+      Every container and init container sets requests.cpu, requests.memory,
+      limits.cpu and limits.memory.
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+      - { apiGroups: [apps], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [deployments, replicasets, statefulsets, daemonsets] }
+      - { apiGroups: [batch], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [jobs, cronjobs] }
+  variables:
+    - name: podSpec
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        (object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec)
+    - name: containers
+      expression: >-
+        variables.podSpec.containers +
+        (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers : [])
+    - name: incomplete
+      expression: >-
+        variables.containers.filter(c, !(
+          has(c.resources) && has(c.resources.requests) && has(c.resources.limits) &&
+          'cpu' in c.resources.requests && 'memory' in c.resources.requests &&
+          'cpu' in c.resources.limits && 'memory' in c.resources.limits
+        )).map(c, c.name)
+  validations:
+    - expression: size(variables.incomplete) == 0
+      messageExpression: >-
+        'containers must set cpu and memory requests AND limits: ' + variables.incomplete.join(', ')

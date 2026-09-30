@@ -89,8 +89,8 @@ than editing the plan.
 - Repo root is `~/git/`, all seven cloned side by side.
 - `scripts/bootstrap-toolchain.sh` owns host tool versions. That pin list is the single
   source of truth. **Homebrew installs them**, but it does not choose the version —
-  never `brew install` or `brew upgrade` one of the ten by hand.
-- **All ten are `brew pin`ned.** Homebrew has no versioned formulae for them, so pinning
+  never `brew install` or `brew upgrade` one of the eleven by hand.
+- **All eleven are `brew pin`ned.** Homebrew has no versioned formulae for them, so pinning
   is the only thing stopping a stray `brew upgrade` from moving helm off 4.2.4. If brew's
   stable moves ahead of the pin list, `--verify` fails — update the pin list
   deliberately, do not unpin to make the error go away.
@@ -117,6 +117,9 @@ cluster here is `arm64`, so anything CI builds, scans or renders crosses that bo
   binaries, which breaks the native-arm64 runner leg.
 - **LF endings**, enforced by `.gitattributes` in all seven repos. A CRLF `.sh` copied
   into a Linux image dies as `bad interpreter: /bin/bash^M`.
-- `scripts/bootstrap-toolchain.sh` keeps a Linux install path. It is unused day to day
-  and deliberately retained: it is what a CI runner would use, and it is the only file
-  allowed to branch on `uname`.
+- `scripts/bootstrap-toolchain.sh` keeps a Linux install path, checksum-verified. It is
+  what the GitHub Actions runners install from (`--only "<tools>"`), so CI runs the
+  laptop's versions, and it is the only file allowed to branch on `uname`.
+- **Actions are first-party only, pinned by full commit SHA** (version in a comment),
+  never `@v7`. The reusable workflows live in `.github/workflows/`; service repos and
+  bo-deploy call them by SHA, so changing CI for everyone is a deliberate re-pin.

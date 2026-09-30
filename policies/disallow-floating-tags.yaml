@@ -1,0 +1,50 @@
+# No floating tags, even beside a digest.
+#
+# A digest already fixes what runs, so a tag next to it is decoration — but a
+# floating one (`:latest`, `:1.2`) tells the reader something false about what
+# is pinned. A full version beside a digest is allowed; CloudNativePG's images
+# are referenced that way (`1.30.1@sha256:…`, `18.6-system-trixie@sha256:…`).
+# A reference with neither tag nor digest is an implicit `:latest`.
+#
+# Defence in depth with require-image-digest, which is the policy that actually
+# pins. Runs in CI first and at admission from Phase 7.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: disallow-floating-tags
+  annotations:
+    policies.kyverno.io/title: No floating image tags
+    policies.kyverno.io/description: >-
+      Rejects latest, lts, stable and similar moving tags, partial versions such
+      as :1 or :1.2, and references with no tag and no digest.
+spec:
+  validationActions: [Deny]
+  matchConstraints:
+    resourceRules:
+      - { apiGroups: [""], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [pods] }
+      - { apiGroups: [apps], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [deployments, replicasets, statefulsets, daemonsets] }
+      - { apiGroups: [batch], apiVersions: [v1], operations: [CREATE, UPDATE], resources: [jobs, cronjobs] }
+  variables:
+    - name: podSpec
+      expression: >-
+        object.kind == 'Pod' ? object.spec :
+        (object.kind == 'CronJob' ? object.spec.jobTemplate.spec.template.spec : object.spec.template.spec)
+    - name: images
+      expression: >-
+        variables.podSpec.containers.map(c, c.image) +
+        (has(variables.podSpec.initContainers) ? variables.podSpec.initContainers.map(c, c.image) : []) +
+        (has(variables.podSpec.ephemeralContainers) ? variables.podSpec.ephemeralContainers.map(c, c.image) : [])
+    # A tag is a ':' segment with no '/' after it, so a registry port
+    # (k3d-registry:5000/…) is never mistaken for one. Every pattern is anchored
+    # to the name before '@': the digest is `sha256:<hex>`, and a hex string of
+    # digits alone would otherwise read as the tag `:1`.
+    - name: floating
+      expression: >-
+        variables.images.filter(i,
+          i.matches('(?i)^[^@]*:(latest|lts|stable|edge|nightly|main|master)(@|$)') ||
+          i.matches('^[^@]*:v?[0-9]+(\\.[0-9]+)?(@|$)') ||
+          (!i.contains('@') && !i.matches(':[^/@]+$')))
+  validations:
+    - expression: size(variables.floating) == 0
+      messageExpression: >-
+        'floating image tags are not allowed (latest, lts, stable, :1, :1.2, or no tag at all): ' + variables.floating.join(', ')

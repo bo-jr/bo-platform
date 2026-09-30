@@ -15,6 +15,7 @@
 #
 # Items expected in the vault (see SETUP.md):
 #   argocd-git-credential   PAT Argo CD uses to read bo-deploy
+#   ci-deploy-pat           fine-grained PAT service CI uses to write bo-deploy (contents+PRs)
 #   promoter-github-pat     fine-grained PAT for cmd/promoter (contents+PRs)
 #   dockerhub-user          Docker Hub username for the pull-through cache
 #   dockerhub-token         Docker Hub access token
@@ -25,16 +26,17 @@ set -euo pipefail
 
 VAULT="${OP_VAULT:-gitops-lab}"
 
-ALL_ITEMS="argocd-git-credential promoter-github-pat dockerhub-user dockerhub-token
+ALL_ITEMS="argocd-git-credential ci-deploy-pat promoter-github-pat dockerhub-user dockerhub-token
            discord-promotions discord-deploys discord-alerts"
 
 # Which items each phase actually needs, so --check can say what is blocking now
-# rather than demanding all seven before Phase 0.
+# rather than demanding every item before Phase 0.
 phase_of() {
   case "$1" in
     dockerhub-user|dockerhub-token)   echo "Phase 0" ;;
     argocd-git-credential)            echo "Phase 1" ;;
-    promoter-github-pat)              echo "Phase 3" ;;
+    ci-deploy-pat)                    echo "Phase 3" ;;
+    promoter-github-pat)              echo "after Phase 7" ;;
     discord-*)                        echo "Phase 4" ;;
     *)                                echo "-"       ;;
   esac
