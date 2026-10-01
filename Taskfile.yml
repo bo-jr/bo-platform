@@ -44,8 +44,8 @@ vars:
   CLUSTERS: mgmt dev prod
 
   # Phase 2 sandbox loop. Service repos are cloned side by side under ~/git.
+  # The chart reference lives in scripts/render-service.sh, the one render path.
   SERVICES: storefront catalog pricing
-  SERVICE_CHART: oci://ghcr.io/bo-jr/charts/service
 
 tasks:
 
@@ -365,21 +365,16 @@ tasks:
         set -- {{.CLI_ARGS}}
         svc=${1:-}; shift || true
         case " {{.SERVICES}} " in *" $svc "*) ;; *) echo "usage: task sandbox:deploy -- <{{.SERVICES}}> [helm args]" >&2; exit 1 ;; esac
-        values="$HOME/git/bo-$svc/chart-values.yaml"
+        repo="$HOME/git/bo-$svc"
         [ -f ".sandbox/$svc.digest" ] || { echo "no build yet: task sandbox:build -- $svc" >&2; exit 1; }
-        # The service repo pins the chart; this reads the pin rather than
-        # choosing a version. The chart refuses to render on a mismatch.
-        ver=$(awk '/^chartVersion:/ { print $2; exit }' "$values")
-        # Pull first, render the local archive. Helm 4 prints "Pulled:" and
-        # "Digest:" on STDOUT when `helm template` fetches an OCI chart itself,
-        # and has no flag to silence it; those lines would be the first YAML
-        # document in the manifest stream. See DECISIONS.md 2026-09-29.
-        chart=$(mktemp -d); trap 'rm -rf "$chart"' EXIT
-        helm pull {{.SERVICE_CHART}} --version "$ver" -d "$chart" >/dev/null
+        # The same render path CI uses (pull the pinned chart, template the
+        # archive; DECISIONS.md 2026-09-29 and 2026-09-30). The timestamp is the
+        # checkout's HEAD commit: the build may include uncommitted edits, which
+        # is fine here — nothing in sandbox is measured or promoted.
+        ts=$(TZ=UTC git -C "$repo" log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
         # Extra args override chart-values, e.g. --set-string env.FAILURE_RATE=0.5
-        helm template "$svc" "$chart"/*.tgz -f "$values" \
-          --set image.repository="k3d-registry:5000/bo-$svc" \
-          --set image.digest="$(cat ".sandbox/$svc.digest")" "$@" \
+        ./scripts/render-service.sh "$repo" "$(cat ".sandbox/$svc.digest")" "$ts" \
+          --set image.repository="k3d-registry:5000/bo-$svc" "$@" \
           | kubectl --context k3d-dev -n sandbox apply --server-side --field-manager=sandbox -f -
         kubectl --context k3d-dev -n sandbox rollout status "deploy/$svc" --timeout=180s
 

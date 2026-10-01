@@ -1150,3 +1150,21 @@ operator then inspects the image (index, both manifests, layers, config, the ful
 list of both platforms), makes the package public, and only then does the Argo CD wiring
 land. Dev never sees an image it cannot pull, and the first run doubles as the proof that
 a run whose PR doesn't merge fails.
+
+---
+
+## 2026-09-30 — Chart 0.2.0 is published from a `git archive` of the merge commit
+
+**Done.** `oci://ghcr.io/bo-jr/charts/service` **0.2.0**, digest
+`sha256:5651ddf611fc3504c1cd5ce35ac8e09db3c3fe441f3c59ecff118249a6916a8e`. It was pushed
+from the laptop exactly as 0.1.0 was: host-only `helm registry login` with the token on
+stdin, `helm push`, `helm registry logout`. An anonymous `helm pull` returns
+byte-identical bytes. It packages the merge commit `6607596` of bo-service-chart#3: the
+same seven files as 0.1.0, `test/run.sh` 30/30.
+
+**Reality check.** The first `helm package` ran in a **git worktree**, and the archive
+contained `service/.git`. In a worktree `.git` is a *file* (`gitdir: /Users/…`), and
+`.helmignore`'s `.git/` pattern only matches a directory. It was caught before the
+push. The chart is now always packaged from `git archive <merge sha>`, which cannot
+contain anything uncommitted or local. `.helmignore` now says `.git` (file or
+directory) as well.
