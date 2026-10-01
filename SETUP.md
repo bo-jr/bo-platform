@@ -196,7 +196,7 @@ The flat side-by-side layout is required by `go.work` (BUILD-PLAN §4), which sp
 cd ~/git/bo-platform && ./scripts/bootstrap-toolchain.sh
 ```
 
-Installs the ten pinned tools with Homebrew into `/opt/homebrew/bin` and freezes each
+Installs the eleven pinned tools with Homebrew into `/opt/homebrew/bin` and freezes each
 with `brew pin`.
 
 The pin list at the top of the script is the authority. Homebrew is only the installer —
@@ -205,8 +205,13 @@ it has no versioned formulae for these tools and cannot install a chosen version
 on itself, so a brew stable that has moved ahead of the pin list fails loudly instead of
 drifting quietly.
 
-The script also carries an unused Linux path that downloads each pinned release
-directly. It is kept because it is what a CI runner would use.
+The script also carries a Linux path that downloads each pinned release directly and
+checks it against the checksum file its upstream publishes. It is what the GitHub
+Actions runners use, for just the tools a job needs:
+
+```bash
+./scripts/bootstrap-toolchain.sh --only "go helm kyverno"
+```
 
 Open a new shell, then confirm:
 
@@ -265,7 +270,8 @@ secret below, each holding the value in a field named `credential`:
 | Item | What it is |
 |---|---|
 | `argocd-git-credential` | PAT Argo CD uses to read `bo-deploy` |
-| `promoter-github-pat` | fine-grained PAT for `cmd/promoter` — `contents: write`, `pull_requests: write`, scoped to `bo-deploy` |
+| `ci-deploy-pat` | fine-grained PAT service CI uses to open and auto-merge the rolling dev PRs — **Contents: read and write**, **Pull requests: read and write**, repository access **only `bo-deploy`**. Set as the `BO_DEPLOY_TOKEN` Actions secret in the three service repos (Phase 3) |
+| `promoter-github-pat` | fine-grained PAT for `cmd/promoter` — `contents: write`, `pull_requests: write`, scoped to `bo-deploy` (the promoter slice, after Phase 7) |
 | `dockerhub-user` | Docker Hub username for the pull-through cache |
 | `dockerhub-token` | Docker Hub access token |
 | `discord-promotions` | webhook URL for `#promotions` |
@@ -273,7 +279,7 @@ secret below, each holding the value in a field named `credential`:
 | `discord-alerts` | webhook URL for `#alerts` |
 
 Items are *API Credential* category, so `credential` is the native primary field
-rather than a custom one. All seven can be created empty up front — only fill the
+rather than a custom one. All of them can be created empty up front — only fill the
 ones the phase you are on needs.
 
 Check the vault without printing anything:

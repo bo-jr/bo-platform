@@ -1,0 +1,134 @@
+# Fixtures for `kyverno test test/policies` (task policies:test).
+# One resource per case; kyverno-test.yaml says what each policy must decide.
+# D is a syntactically valid digest; nothing here is ever pulled.
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: good }
+spec:
+  selector: { matchLabels: { app: good } }
+  template:
+    metadata: { labels: { app: good } }
+    spec:
+      initContainers:
+        - name: init
+          image: cgr.dev/chainguard/static@sha256:41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 50m, memory: 32Mi } }
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }
+---
+# A registry port is not a tag; a full version beside a digest is allowed.
+apiVersion: v1
+kind: Pod
+metadata: { name: port-and-full-version }
+spec:
+  containers:
+    - name: local
+      image: k3d-registry:5000/bo-pricing@sha256:0000000000000000000000000000000000000000000000000000000000000000
+      resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 50m, memory: 32Mi } }
+    - name: cnpg
+      image: ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:99bc64e413d59b017d169ce2ff25746f1d68c5d7210a19f12c0464a109216ee1
+      resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 50m, memory: 32Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: tag-only }
+spec:
+  selector: { matchLabels: { app: tag-only } }
+  template:
+    metadata: { labels: { app: tag-only } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront:v1.4.2
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: latest-beside-digest }
+spec:
+  selector: { matchLabels: { app: latest-beside-digest } }
+  template:
+    metadata: { labels: { app: latest-beside-digest } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront:latest@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: partial-version }
+spec:
+  selector: { matchLabels: { app: partial-version } }
+  template:
+    metadata: { labels: { app: partial-version } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront:1.2
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: bare-name }
+spec:
+  selector: { matchLabels: { app: bare-name } }
+  template:
+    metadata: { labels: { app: bare-name } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }
+---
+# The init container is the offender; the main container is fine.
+apiVersion: batch/v1
+kind: CronJob
+metadata: { name: init-tag }
+spec:
+  schedule: "0 0 * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          initContainers:
+            - name: init
+              image: cgr.dev/chainguard/static:latest
+              resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 50m, memory: 32Mi } }
+          containers:
+            - name: job
+              image: cgr.dev/chainguard/static@sha256:41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f
+              resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { cpu: 50m, memory: 32Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: no-limits }
+spec:
+  selector: { matchLabels: { app: no-limits } }
+  template:
+    metadata: { labels: { app: no-limits } }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          resources: { requests: { cpu: 50m, memory: 64Mi } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: no-cpu-limit-in-init }
+spec:
+  selector: { matchLabels: { app: no-cpu-limit-in-init } }
+  template:
+    metadata: { labels: { app: no-cpu-limit-in-init } }
+    spec:
+      initContainers:
+        - name: init
+          image: cgr.dev/chainguard/static@sha256:41e17ed83c594a64a9396b6ab96dd26d5ddc290dacf4c177464712ff21ad534f
+          resources: { requests: { cpu: 10m, memory: 16Mi }, limits: { memory: 32Mi } }
+      containers:
+        - name: app
+          image: ghcr.io/bo-jr/bo-storefront@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          resources: { requests: { cpu: 50m, memory: 64Mi }, limits: { cpu: 500m, memory: 128Mi } }

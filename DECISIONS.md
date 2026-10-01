@@ -839,3 +839,314 @@ OCI publish flow in Phase 2 misbehaves". The *publish* flow did not: a host-only
 `helm registry login ghcr.io` with the token on stdin stored the credential in the macOS
 keychain (`credsStore`; `auths` stayed empty), `helm push` succeeded, and
 `helm registry logout` removed it. Only the consume side needed this change.
+
+---
+
+## 2026-09-30 — Phase 3 is CI → dev; the promoter is a separate slice after Phase 7
+
+**Decision.** Phase 3 delivers: push to `main` in a service repo → test + policy → a
+multi-arch image on ghcr, pinned by index digest, signed and with GitHub build provenance →
+a rolling dev PR in `bo-deploy` → auto-merge on a required check → Argo CD syncs dev.
+
+`cmd/promoter`, the prod PR, the dev-health status check and the prod branch-protection
+check become **a separately accepted slice after Phase 7**, built as BUILD-PLAN specifies.
+
+**Why.** The promoter reads the live dev **Rollout** (Phase 6) and takes its GitHub token
+from OpenBao via ESO (Phase 7). Building it now against Deployments and a stop-gap Secret
+would mean building it twice.
+
+**Decided now, built later: dev-health is a commit status the promoter maintains.**
+BUILD-PLAN asks for a check that "re-queries dev health at merge time". A GitHub-hosted
+runner cannot reach this laptop, so no Actions job can ask dev anything. The in-cluster
+reconciler can: on every run it sets a `dev-health` commit status on each open prod PR's
+head, from what it just read. That is level-triggered like everything else it does, and
+the required check on the prod branch is that status.
+
+**Consequence.** The dev GitHub Deployment is created `in_progress` when the dev PR merges
+and stays there. "Merged into bo-deploy" is not "healthy in dev", and only the promoter can
+tell the difference, so it closes the deployment.
+
+---
+
+## 2026-09-30 — The reusable workflows live in bo-platform, called by commit SHA
+
+**Decision.** Two reusable workflows in `bo-platform/.github/workflows/`:
+
+- `service-ci.yml`, called by the three service repos;
+- `deploy-validate.yml`, called by `bo-deploy`.
+
+Every caller pins them by 40-hex commit SHA, never by branch or tag. Each checks out
+bo-platform at **`job.workflow_sha`**, so the toolchain script, the policies, the render
+script and the BuildKit pin it uses come from the same commit as the workflow. One SHA in
+the caller pins all of it.
+
+**Why bo-platform.** It is the only repo whose job is to change things for every service,
+and it already owns the pins these workflows consume. The cosign certificate identity then
+names bo-platform's workflow (`…/bo-platform/.github/workflows/service-ci.yml@<sha>`). That
+is exactly what Phase 7's attestation policy asserts, and what `validate` already checks.
+`bo-service-chart` would have mixed a chart pin (semver) with a CI pin (SHA) in one repo.
+Three copies would have drifted, and would have given Phase 7 three signer identities to
+trust.
+
+**Known gap, not changed here.** bo-platform has no ruleset (`task repos:protect:show`), so
+the CI for every service sits in the one unprotected repo. SHA pinning bounds the damage:
+nothing reaches a service until its caller is re-pinned by a reviewed PR. Protecting
+bo-platform is the operator's call.
+
+---
+
+## 2026-09-30 — bo-deploy is written by a fine-grained PAT, `ci-deploy-pat`
+
+**Decision.** Service CI writes `bo-deploy` with a fine-grained PAT that has repository access
+to `bo-deploy` only, with **Contents: read and write** and **Pull requests: read and write**.
+It lives in 1Password as `ci-deploy-pat` and reaches the three service repos as the Actions
+secret `BO_DEPLOY_TOKEN`, set by the operator with `gh secret set` reading stdin. It is a
+separate item from `promoter-github-pat`, so the two revoke independently.
+
+`GITHUB_TOKEN` cannot push to another repository. A GitHub App was the alternative: a
+distinct `[bot]` identity, and short-lived tokens via `actions/create-github-app-token`.
+It was declined for now. It adds App setup, and the long-lived secret becomes its private
+key. It remains the route to making a required review meaningful (2026-09-12).
+
+**Stated plainly.** With 0 required reviews, anything holding this token can open *and
+merge* a PR that changes `rendered/prod/`. That is true of any identity until the prod gate
+exists. `validate` currently refuses any `rendered/` change that is not a `dev/<svc>`
+branch writing its own directory, which closes the obvious path.
+
+---
+
+## 2026-09-30 — bo-deploy requires a `validate` check; without one, auto-merge merges at once
+
+**Reality check.** `gh pr merge --auto` merges **immediately** when the PR's merge state is
+`CLEAN` or `UNSTABLE`, read in gh's source (`isImmediatelyMergeable`). With 0 reviews and
+no required check, a dev PR is `CLEAN` the moment it opens. So "auto-merge when checks
+pass" gates nothing, and a *failing* optional check (`UNSTABLE`) doesn't stop it either.
+
+**Decision.** `bo-deploy` runs `deploy-validate.yml` on every PR. A second ruleset,
+`deploy-checks`, applies to bo-deploy only and makes its check run `validate / rendered`
+required, bound to the GitHub Actions app (integration 15368) so a hand-posted status
+cannot satisfy it. `task repos:protect:deploy-checks` applies it. It is kept apart from
+`main-protection`, because a required check on a repo that never runs it blocks every
+merge, and apart from `task repos:protect`, which would also start protecting bo-platform.
+
+It checks five things:
+
+- only CI's `dev/<svc>` branch writes `rendered/`, and only `rendered/dev/<svc>/`;
+- Kyverno passes on every rendered manifest;
+- every changed image resolves **anonymously**, as an OCI index of exactly
+  linux/amd64 + linux/arm64;
+- every changed image is cosign-signed by bo-platform's `service-ci.yml`, called by SHA,
+  from the image's own repo;
+- every workload carries a well-formed commit timestamp.
+
+This supersedes "the dev-health check" that bo-deploy's CLAUDE.md listed as Phase 3's
+required check. That check moves to the promoter slice (above).
+
+---
+
+## 2026-09-30 — Kyverno CLI v1.19.1 is the eleventh pinned host tool; policies are `ValidatingPolicy`
+
+**Decision.** `kyverno` **v1.19.1** joins the pin list in `scripts/bootstrap-toolchain.sh`.
+On the Mac, brew installs it and `brew pin` freezes it, like the other ten; brew stable
+was exactly 1.19.1. CI installs it on the Linux path. Once the admission controller
+arrives in Phase 7, the CLI pin **must track its version**, the way `argocd` tracks the
+Argo CD server.
+
+The three policies in `policies/` are **`ValidatingPolicy`, `policies.kyverno.io/v1`
+(CEL)**:
+
+- `require-image-digest`
+- `disallow-floating-tags`, which also rejects a floating tag beside a digest, and a bare
+  name (implicit `:latest`)
+- `require-requests-limits`, all four values on every container and init container
+
+Test cases live in `test/policies/` (`task policies:test`, 27 decisions).
+
+**Reality check.** Kyverno **1.19 deprecated `ClusterPolicy`**, and 1.20 removes it. The
+plan predates that; writing ClusterPolicies now would mean rewriting them in Phase 7.
+
+**Why a host tool and not CI-only.** Phase 7 requires that both admission failures
+"reproduce in CI first". Being able to run the identical check on the laptop
+(`task policies:check -- <file>`) is the cheap half of that.
+
+---
+
+## 2026-09-30 — `kyverno apply <dir>` silently applies nothing if the directory holds a non-policy YAML
+
+**Reality check, found writing the policies.** Given a directory, `kyverno apply` recurses.
+One file it cannot parse as a policy, here the `Test` manifest of the test cases, makes it
+**skip the entire directory**. It logs that only at `-v 3`, applies zero policies, and
+**exits 0** on a render that violates all three. A CI gate built on
+`kyverno apply policies/` would have passed everything, forever.
+
+**Decision.**
+
+- Test cases live in `test/policies/`, not under `policies/`.
+- Nothing calls `kyverno apply` directly. `scripts/policy-check.sh` passes each policy
+  file explicitly and **fails unless every policy produced at least one result**. A check
+  that evaluated nothing can therefore never read as green.
+- Service CI, bo-deploy's `validate` and `task policies:check` all use that script.
+
+---
+
+## 2026-09-30 — CI installs its tools through `bootstrap-toolchain.sh`, checksum-verified; actions are first-party, by SHA
+
+**Decision.**
+
+- **The Linux path of `bootstrap-toolchain.sh` is how runners get tools.** It gains
+  `--only "<tools>"`, so a job installs only what it uses. It also gains sha256
+  verification of every download against the checksum file its upstream publishes;
+  a mismatch installs nothing. It ends by running `--verify` on what it installed.
+  Tested in a digest-pinned `ubuntu:24.04` on linux/arm64 (all eleven) and linux/amd64
+  (the CI subset), plus a swapped checksum that correctly failed.
+- **Actions: first-party only, pinned by full commit SHA** with the version in a comment:
+  `actions/checkout` v7.0.1, `actions/attest` v4.2.2, `actions/upload-artifact` v7.0.1
+  and `actions/download-artifact` v8.0.1. All are node24, so they run the same on both
+  runner architectures. Everything else is plain shell.
+- **`actions/attest`, not `actions/attest-build-provenance`**, which BUILD-PLAN §3 names.
+  As of v4 the latter is a thin wrapper around `actions/attest`, and its README says new
+  work should use `actions/attest`. The predicate is the same SLSA build provenance.
+  `create-storage-record: false`, so no `artifact-metadata` permission is needed.
+
+**Cost, stated.** The script was already 178 lines, past the ~150 boundary set for it
+(2026-09-05). This adds a subset flag and a checksum helper. It also removes the
+macOS asset-name variables (`OS_ALT`, `GH_OS`, `GH_EXT`, 2026-09-07) from the Linux
+path; they were dead code once Homebrew took over macOS.
+
+**Unpinnable, noted.** The runner images (`ubuntu-24.04`, `ubuntu-24.04-arm`) and the
+docker/buildx *client* on them move weekly. What they build with is pinned: the BuildKit
+daemon image and every tool above.
+
+---
+
+## 2026-09-30 — CI builds on rootful, pinned BuildKit with no remote cache
+
+**Decision.**
+
+- Each architecture builds on its own native runner (`ubuntu-24.04`, `ubuntu-24.04-arm`).
+- The builder is a buildx `docker-container` on the **same `moby/buildkit` v0.33.0 index
+  digest as `task builder`**. The workflow reads it from `Taskfile.yml` `vars`, the one
+  authority.
+- Builds run with `--provenance=false --sbom=false` and `oci-mediatypes=true`. Each leg
+  pushes one plain image manifest by digest.
+- Each leg then runs the image it pushed, on its own architecture, and requires `/healthz`
+  to answer 200.
+
+BUILD-PLAN §3 says "BuildKit (rootless, registry-backed cache)". Both parts are declined:
+
+- **No remote cache.** The Dockerfiles keep the Go module and build caches in
+  `--mount=type=cache`, which no cache backend exports. A layer cache would restore
+  `go mod download` as an empty layer, and `go build` would still run cold on every new
+  commit. It would only help a rebuild of an identical commit. A registry cache is also a
+  mutable tag, the one floating reference the lab would then have.
+- **Rootful.** Rootless BuildKit on ubuntu-24.04 needs AppArmor's restriction on
+  unprivileged user namespaces relaxed (`sudo sysctl
+  kernel.apparmor_restrict_unprivileged_userns=0`). That means weakening a host control
+  to run a "safer" daemon, on a throwaway VM where the job already has passwordless sudo.
+
+**Why BuildKit's own provenance is off.** Provenance comes from GitHub
+(`actions/attest`), signed against the workflow's OIDC identity. Leaving BuildKit's on
+would make each per-arch push a one-entry index with an attestation manifest. The merged
+index would then carry `unknown/unknown` entries, as the local sandbox builds do.
+
+---
+
+## 2026-09-30 — The image index is pushed by digest; no tag exists
+
+**Reality check.** `docker buildx imagetools create` refuses to push without a tag
+(verified: "can't push with no tags specified, please set --tag or --dry-run").
+
+**Decision.** The publish job runs `imagetools create --dry-run` over the two per-arch
+digests, which prints the index. It takes the sha256 of those bytes, `PUT`s them to
+`/v2/bo-jr/bo-<svc>/manifests/sha256:<that>` with curl, reads them back by digest, and
+requires identical bytes and exactly linux/amd64 + linux/arm64. The ghcr bearer token
+reaches curl on stdin (`curl -K -`), never argv. Only then is the image signed, attested
+and rendered. So no tag exists anywhere, which matches the local sandbox builds, and a
+per-arch digest cannot reach `bo-deploy`: the render only ever sees the index digest.
+
+Verified against the local push registry first: `201 Created`, `Docker-Content-Digest`
+equal to the computed digest, identical bytes read back, and `tags/list` empty.
+
+---
+
+## 2026-09-30 — bo-deploy's layout, and the commit timestamp stamped by the chart
+
+**Decision.**
+
+- **Layout.** `rendered/dev/<svc>/manifests.yaml`, byte for byte what `helm template`
+  emits for the pulled chart archive. That is `scripts/render-service.sh`, the only render
+  path, which `task sandbox:deploy` also uses.
+- **Annotation.** `gitops-lab/commit-timestamp: "<RFC3339, UTC>"`, the committer date of
+  the built commit. It goes on the **workload's own metadata only**: the Deployment now,
+  the Rollout in Phase 6. It is not on the pod template, so a timestamp alone never
+  restarts pods. It is not on the Service or ServiceAccount, so they never diff. The DORA
+  exporter reads it from the workload (Phase 7).
+- **Stamped by the chart,** not by post-processing. Chart **0.2.0** adds a required,
+  schema-checked `commitTimestamp` value; the three services re-pin. Post-processing
+  would need a YAML editor in CI (`yq` is not pinned), and the committed YAML would no
+  longer be what helm produced.
+- **Rolling branch** `dev/<svc>`. The PR is titled `dev: <svc> <short sha>`. The body
+  carries the source commit link, the timestamp, the index digest, the chart version and
+  digest, the run link, and copy-paste `cosign verify` / `gh attestation verify` commands.
+  No SHA, run ID or digest appears anywhere else in the repo, so a new push diffs in
+  exactly two lines, the digest and the timestamp.
+
+---
+
+## 2026-09-30 — Dev promotions are serialized, never dropped, and never go backwards
+
+**Reality check.** A `concurrency` group with `cancel-in-progress: false` still keeps at
+most **one** pending run and cancels older pending ones (the default `queue: single`). And
+GitHub does not guarantee the order runs leave the queue. So "serialize, do not cancel"
+(BUILD-PLAN Phase 3) needs more than the obvious setting, and two builds finishing out of
+order could promote the older one last.
+
+**Decision.** The promote-dev job, not the build, carries
+`concurrency: { group: promote-dev-<svc>, cancel-in-progress: false, queue: max }`, so up
+to 100 runs wait and none is evicted. Its first step asks whether the run's commit is
+still the tip of `main`. If not, it exits green with a notice ("superseded by <sha>"):
+the image is built and signed, and the newer commit's own run promotes. A promotion can
+therefore never regress dev to an older commit.
+
+---
+
+## 2026-09-30 — Argo CD delivers the services and catalog's database to `shop` in dev
+
+**Decision.**
+
+- **Namespace `shop`**, the name Phase 5 uses.
+- A `services` ApplicationSet generates one Application per service: clusters
+  (`env In [dev]`) × git directories `bo-deploy/rendered/<env>/*`. It is a directory
+  source with automated prune + self-heal and label `wave: "4"`.
+- A `databases` ApplicationSet generates `databases-dev` from `bo-platform/databases/dev`
+  into `shop`.
+- `sandbox` stays the unmanaged inner loop.
+- **Prod is not selected yet.** Prod joins with the promoter slice, together with
+  `databases/prod/`.
+
+**The CNPG CRD race** (2026-09-29 carry-in): on a cold rebuild, `databases-dev` applies a
+`Cluster` before `cloudnative-pg-dev` has installed its CRD. `databases-dev` therefore
+carries `syncPolicy.retry` with an unlimited limit and exponential backoff capped at a few
+minutes. The first sync fails on the missing kind, and a retry succeeds once the CRD
+exists. catalog's pods wait on the not-yet-generated `catalog-db-app` Secret
+(`CreateContainerConfigError`) and start when it appears. Nothing new is installed.
+
+- ApplicationSet progressive sync was declined. `RollingSync` only orders Applications
+  inside **one** ApplicationSet, so the database would have to move into the platform
+  appset, and it still could not order the services after it.
+- App-of-apps sync waves were declined. They wait only on hand-written Applications, and
+  only after restoring Application health assessment.
+
+The cold path itself is proven by Phase 8's rebuild; Phase 3 verifies the steady state.
+
+---
+
+## 2026-09-30 — Image visibility is a merge gate
+
+**Decision.** ghcr creates each package **private** on first push, and the clusters pull
+anonymously through the `ghcr` cache. `validate` therefore requires every image to resolve
+anonymously. A service's first CI run is expected to fail at the merge timeout. The
+operator then inspects the image (index, both manifests, layers, config, the full file
+list of both platforms), makes the package public, and only then does the Argo CD wiring
+land. Dev never sees an image it cannot pull, and the first run doubles as the proof that
+a run whose PR doesn't merge fails.

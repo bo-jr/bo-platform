@@ -1,0 +1,118 @@
+# bo-deploy's required `validate` check (DECISIONS.md 2026-09-30).
+#
+# bo-deploy calls it on every pull request, pinned by commit SHA:
+#
+#   uses: bo-jr/bo-platform/.github/workflows/deploy-validate.yml@<40-hex sha>
+#
+# Auto-merge is only a gate if something required can fail: `gh pr merge --auto`
+# merges a PR with no pending required check at once. This is that check. It
+# asks, of the PR's result:
+#
+#   1. Only CI writes rendered/, and only its own service's directory: a
+#      `dev/<svc>` branch may change rendered/dev/<svc>/ and nothing else under
+#      rendered/, and no other branch may touch rendered/ at all.
+#   2. Every rendered manifest passes the lab's Kyverno policies.
+#   3. Every changed image resolves ANONYMOUSLY — how the clusters pull, through
+#      the ghcr cache — as an OCI index of exactly linux/amd64 + linux/arm64.
+#   4. Every changed image carries a cosign signature from service-ci.yml in
+#      bo-platform, called by SHA, from the service's own repository.
+#   5. Every changed workload carries a well-formed gitops-lab/commit-timestamp.
+name: deploy-validate
+
+on:
+  workflow_call: {}
+
+permissions: {}
+
+jobs:
+  rendered:
+    name: rendered
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      HEAD_REF: ${{ github.head_ref }}
+    steps:
+      # The PR's merge commit, so HEAD^1 is the base it would merge into.
+      - name: Check out the pull request
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: deploy
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check out bo-platform at this workflow's commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: platform
+          persist-credentials: false
+
+      - name: Pinned toolchain
+        run: |
+          platform/scripts/bootstrap-toolchain.sh --only "cosign kyverno jq"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: 1. Only CI writes rendered/, one service per branch
+        working-directory: deploy
+        run: |
+          git diff --name-only HEAD^1 HEAD > ../changed.txt
+          echo "changed:"; sed 's/^/  /' ../changed.txt
+          grep '^rendered/' ../changed.txt > ../rendered.txt || true
+          [ -s ../rendered.txt ] || { echo "no change under rendered/"; exit 0; }
+          case "$HEAD_REF" in
+            dev/*) svc=${HEAD_REF#dev/} ;;
+            *) echo "::error::only CI's dev/<service> branches may change rendered/ (this is $HEAD_REF)"; exit 1 ;;
+          esac
+          if grep -v "^rendered/dev/$svc/" ../rendered.txt; then
+            echo "::error::branch $HEAD_REF may only change rendered/dev/$svc/"; exit 1
+          fi
+
+      - name: 2. Kyverno policies on every rendered manifest
+        run: |
+          mapfile -t files < <(find deploy/rendered -name '*.yaml' 2>/dev/null | sort)
+          [ ${#files[@]} -gt 0 ] || { echo "rendered/ is empty"; exit 0; }
+          platform/scripts/policy-check.sh "${files[@]}"
+
+      - name: 3-5. Changed images are public, multi-arch, signed; timestamps well-formed
+        run: |
+          fail=0
+          err() { echo "::error::$*"; fail=1; }
+          while read -r f; do
+            [ -f "deploy/$f" ] || continue          # deleted in this PR
+            echo "== $f"
+            n=$(grep -cE '^    gitops-lab/commit-timestamp: "[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z"$' "deploy/$f" || true)
+            [ "$n" -ge 1 ] || err "$f: no well-formed gitops-lab/commit-timestamp on the workload"
+            for ref in $(sed -nE 's/^ +image: "?([^"]+)"?$/\1/p' "deploy/$f" | sort -u); do
+              [[ "$ref" =~ ^ghcr\.io/bo-jr/(bo-[a-z0-9-]+)@(sha256:[0-9a-f]{64})$ ]] \
+                || { err "$ref: not ghcr.io/bo-jr/bo-<service>@sha256:<digest>"; continue; }
+              repo=bo-jr/${BASH_REMATCH[1]} digest=${BASH_REMATCH[2]}
+
+              # 3. Anonymous, exactly as the clusters pull.
+              tok=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$repo:pull" | jq -r '.token // empty') || tok=
+              if [ -z "$tok" ] || ! printf 'header = "Authorization: Bearer %s"\n' "$tok" \
+                   | curl -fsS -K - -H 'Accept: application/vnd.oci.image.index.v1+json' \
+                       "https://ghcr.io/v2/$repo/manifests/$digest" -o index.json 2>/dev/null; then
+                err "$ref: not readable anonymously. The clusters pull without credentials — is the ghcr package public?"
+                continue
+              fi
+              jq -e '.mediaType == "application/vnd.oci.image.index.v1+json" and
+                     ([.manifests[] | select(.platform.os == "linux") | .platform.architecture] | sort) == ["amd64", "arm64"]' \
+                index.json >/dev/null \
+                || { err "$ref: not an OCI index of exactly linux/amd64 + linux/arm64"; continue; }
+              echo "   public, OCI index, linux/amd64 + linux/arm64"
+
+              # 4. Signed by the lab's CI, called by SHA, from the image's own repo.
+              if cosign verify "$ref" \
+                   --certificate-identity-regexp '^https://github\.com/bo-jr/bo-platform/\.github/workflows/service-ci\.yml@[0-9a-f]{40}$' \
+                   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+                   --certificate-github-workflow-repository "$repo" >/dev/null 2>cosign.err; then
+                echo "   signed by bo-jr/bo-platform service-ci.yml for $repo"
+              else
+                sed 's/^/     /' cosign.err; err "$ref: no valid signature from bo-platform's service-ci.yml for $repo"
+              fi
+            done
+          done < rendered.txt
+          exit $fail
