@@ -1168,3 +1168,97 @@ contained `service/.git`. In a worktree `.git` is a *file* (`gitdir: /Users/…`
 push. The chart is now always packaged from `git archive <merge sha>`, which cannot
 contain anything uncommitted or local. `.helmignore` now says `.git` (file or
 directory) as well.
+
+---
+
+## 2026-10-01 — CI-pushed packages are born public; the visibility gate's premise was wrong
+
+**Reality check.** The 2026-09-30 entry "Image visibility is a merge gate" assumed ghcr
+creates each new package **private**, as it did for the chart in Phase 2. It does not
+for CI. `ghcr.io/bo-jr/bo-storefront` was created **public** by its first push. A package
+pushed from a workflow with `GITHUB_TOKEN` is linked to its repository, and this one's
+repository is public. The chart was private because it was pushed from the laptop with a
+personal token, unlinked. GitHub's docs: "Once you make a package public, you cannot make
+it private again."
+
+So push 1 did not fail as planned. `validate` passed honestly (anonymous, multi-arch,
+signed), and the dev PR auto-merged in 11 seconds.
+
+**Decision.**
+
+- **Inspection moves to before Argo CD consumes an image**, not before it is public. Each
+  service's first image is inspected the way storefront's was (below), and the Argo CD
+  wiring lands only after the operator's OK. Until then the image is public but nothing
+  runs it, and a bad version can be deleted.
+- **`validate` keeps the anonymous-pull requirement.** The clusters pull anonymously
+  through the `ghcr` cache, so it is still exactly the right check. It just will not trip
+  on a CI image.
+- **The fail path is exercised deliberately** (next entry but one).
+
+**What the inspection of storefront's first image showed** (`sha256:caf45b45…`, read
+anonymously):
+
+- an OCI index of exactly linux/amd64 + linux/arm64;
+- two layers per platform: the Chainguard `static` base (apko), then one file,
+  `/storefront`, 16.3 MB on arm64 and 17.4 MB on amd64;
+- 1,251 files, identical path sets on both platforms, 1,201 of them
+  `usr/share/zoneinfo`;
+- user `65532:65532`, entrypoint `/storefront`, port 8080;
+- no `.git`, `go.work`, `.env`, keys, tokens, sources or markdown.
+
+`cosign verify` and `gh attestation verify` pass from the laptop. The SLSA v1 provenance
+names builder `bo-platform/…/service-ci.yml@c1c04cd` and source `bo-storefront@5781984`,
+on a GitHub-hosted runner.
+
+---
+
+## 2026-10-01 — ghcr has no OCI referrers API; signatures live under a `sha256-<digest>` tag
+
+**Reality check.** `GET /v2/<repo>/referrers/<digest>` on ghcr returns 404. cosign v3 and
+`actions/attest` therefore fall back to the referrers *tag schema*. Each image repository
+gains one tag, `sha256-<index digest>`, an index of two sigstore bundles: the cosign
+signature and the SLSA provenance.
+
+**Amends** the 2026-09-30 entry "The image index is pushed by digest; no tag exists". The
+image itself still has no tag; the only tag is this referrers fallback, named for the
+digest it describes. It is not a runnable image, nothing renders or deploys it, and
+`validate`'s `@sha256:<64 hex>` pattern cannot name it. cosign finds it automatically.
+Phase 7's `ImageValidatingPolicy` must too, so test that there, along with cosign v3's
+bundle format.
+
+---
+
+## 2026-10-01 — Image labels describe the service, not its base
+
+**Reality check.** Without overrides, the image inherits the Chainguard base's OCI labels
+and calls itself `title: static`, `vendor: Chainguard`, `created: 2026-09-24`, the base's
+build date.
+
+**Decision.** The build sets `title`, `description`, `vendor`, `authors`, `url`, `created`,
+`source` and `revision` itself. `created` is the **commit** time, so the labels are a
+function of the commit rather than of when the build ran. The index carries `title`,
+`source` and `revision` as annotations.
+
+---
+
+## 2026-10-01 — The wait-and-fail path is exercised by holding the gate on purpose
+
+**Decision.** Two acceptance items need a dev PR that cannot merge: "a run whose PR
+doesn't merge fails" and "CI force-pushes an open dev PR". Since CI images are public,
+nothing natural produces one. `task repos:deploy-checks:hold` adds a second required
+check, `hold`, that nothing ever reports (bound to the Actions app, so no hand-posted
+status satisfies it), and `task repos:deploy-checks:release` removes it.
+
+That is precisely how a failing check strands a PR in real life: the gate's own
+mechanism, with no special code path in CI.
+
+**Also confirmed on the first runs.**
+
+- `job.workflow_sha` resolves inside a called workflow.
+- `concurrency.queue: max` is accepted on a job in a reusable workflow.
+- `ubuntu-24.04-arm` runs this personal account's public repos.
+- ghcr accepts an index `PUT` by digest.
+- bo-deploy's check run is named `validate / rendered`.
+
+`gh attestation verify` prints **nothing** when stdout is not a terminal, even on
+success. Use `--format json` when its result is evidence.
