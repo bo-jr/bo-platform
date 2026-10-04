@@ -7,7 +7,8 @@
 # embedded in the catalog binary, so a schema change promotes with the digest.
 #
 # Namespace-less on purpose. Phase 2: `task sandbox:db` applies it to `sandbox`.
-# Phase 3: Argo CD delivers it next to the services.
+# Phase 3: Argo CD delivers it next to the services, into `shop`, from
+# argocd/appsets/databases.yaml.
 #
 # CNPG generates the Secret `catalog-db-app` (keys include `uri`), which catalog
 # reads as DATABASE_URL. Phase 7 moves that Secret's source to OpenBao via ESO.
@@ -15,6 +16,12 @@ apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: catalog-db
+  annotations:
+    # Argo CD (databases-<env>, Phase 3) never prunes or deletes this, even if
+    # the file or the Application goes away: losing the Cluster loses its
+    # PVCs. Removing a database is a deliberate kubectl delete. Ignored by the
+    # `task sandbox:db` path, which is plain kubectl.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   instances: 1
 

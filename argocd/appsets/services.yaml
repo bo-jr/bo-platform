@@ -1,0 +1,60 @@
+# The services, from bo-deploy: one Application per (spoke x rendered service).
+#
+# MATRIX again: each spoke reads rendered/<its env>/, picked by the cluster's
+# `env` label, and every directory under it is one service. CI writes those
+# directories (Phase 3); nothing here names a service, so a fourth one would
+# need no change in this file.
+#
+# A plain DIRECTORY source. bo-deploy holds rendered manifests, so Argo CD never
+# templates a service at sync time — what was reviewed in the PR is
+# byte-for-byte what is applied (BUILD-PLAN §4).
+#
+# dev only for now. prod joins with the promoter slice, together with its
+# database (DECISIONS.md 2026-09-30).
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: services
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - clusters:
+              selector:
+                matchExpressions:
+                  - { key: env, operator: In, values: [dev] }
+          - git:
+              repoURL: https://github.com/bo-jr/bo-deploy.git
+              revision: main
+              directories:
+                - path: "rendered/{{ .metadata.labels.env }}/*"
+  template:
+    metadata:
+      # storefront-dev: the in-cluster name, never bo-storefront.
+      name: "{{ .path.basename }}-{{ .metadata.labels.env }}"
+      labels:
+        env: "{{ .metadata.labels.env }}"
+        service: "{{ .path.basename }}"
+        # Informational, like the platform appset's (DECISIONS.md 2026-09-29).
+        wave: "4"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/bo-jr/bo-deploy.git
+        targetRevision: main
+        path: "{{ .path.path }}"
+        directory:
+          recurse: false
+      destination:
+        name: "{{ .name }}"
+        # The rendered manifests are namespace-less; this decides where they go.
+        namespace: shop
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
