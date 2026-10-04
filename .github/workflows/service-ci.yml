@@ -160,11 +160,23 @@ jobs:
       # One platform per native runner. No BuildKit provenance or SBOM: the
       # provenance is GitHub's (publish job), and leaving these off keeps each
       # push a plain image manifest rather than a one-entry index.
+      #
+      # Every OCI label the base image sets is overridden: otherwise the image
+      # inherits Chainguard's and calls itself `static`, made by Chainguard on
+      # the base's build date (DECISIONS.md 2026-10-01). `created` is the commit
+      # time, so the labels are a function of the commit, not of the build.
       - name: Build linux/${{ matrix.arch }} and push it by digest
         id: build
         run: |
+          created=$(TZ=UTC git -C src log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ)
           docker buildx build --builder ci --platform "linux/$ARCH" \
             --provenance=false --sbom=false \
+            --label "org.opencontainers.image.title=$SERVICE" \
+            --label "org.opencontainers.image.description=$SERVICE service of the bo-jr GitOps lab" \
+            --label "org.opencontainers.image.vendor=bo-jr" \
+            --label "org.opencontainers.image.authors=bo-jr" \
+            --label "org.opencontainers.image.url=https://github.com/$GITHUB_REPOSITORY" \
+            --label "org.opencontainers.image.created=$created" \
             --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --output "type=image,name=$IMAGE,push-by-digest=true,name-canonical=true,push=true,oci-mediatypes=true" \
@@ -250,6 +262,7 @@ jobs:
         run: |
           amd=$(cat digests/amd64); arm=$(cat digests/arm64)
           docker buildx imagetools create --dry-run \
+            --annotation "index:org.opencontainers.image.title=$SERVICE" \
             --annotation "index:org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
             --annotation "index:org.opencontainers.image.revision=$GITHUB_SHA" \
             "$IMAGE@$amd" "$IMAGE@$arm" > index.json

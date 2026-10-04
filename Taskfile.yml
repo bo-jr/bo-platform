@@ -467,6 +467,9 @@ tasks:
       # GitHub Actions app, so only an Actions run can satisfy it — not a
       # commit status anyone with the token could post.
       CHECK: validate / rendered
+      # Extra required checks, JSON objects with a leading comma. Empty except
+      # under repos:deploy-checks:hold.
+      EXTRA: '{{.EXTRA | default ""}}'
     cmds:
       - |
         set -eu
@@ -488,7 +491,7 @@ tasks:
               "parameters": {
                 "strict_required_status_checks_policy": false,
                 "do_not_enforce_on_create": false,
-                "required_status_checks": [ { "context": "{{.CHECK}}", "integration_id": 15368 } ]
+                "required_status_checks": [ { "context": "{{.CHECK}}", "integration_id": 15368 }{{.EXTRA}} ]
               }
             }
           ]
@@ -500,6 +503,23 @@ tasks:
         else
           gh api -X POST repos/bo-jr/bo-deploy/rulesets --input "$payload" --jq '"created ruleset \(.id)"'
         fi
+
+  # Hold the gate: require one more check that nothing ever reports, so no dev
+  # PR can merge. This is how a failing check strands a PR, made deliberate,
+  # to exercise CI's wait-and-fail and its force-push of an open PR
+  # (DECISIONS.md 2026-10-01). Always followed by repos:deploy-checks:release.
+  repos:deploy-checks:hold:
+    desc: "bo-deploy only: also require a check named `hold` that never reports. Blocks every merge."
+    cmds:
+      - task: repos:protect:deploy-checks
+        vars: { EXTRA: ', { "context": "hold", "integration_id": 15368 }' }
+      - echo "bo-deploy is HELD — no PR can merge until task repos:deploy-checks:release"
+
+  repos:deploy-checks:release:
+    desc: "bo-deploy only: drop the `hold` check again; `validate` alone is required."
+    cmds:
+      - task: repos:protect:deploy-checks
+      - echo "bo-deploy released — PRs with auto-merge on merge as soon as validate passes"
 
   repos:protect:show:
     desc: "Print the current ruleset on each repo without changing anything."
