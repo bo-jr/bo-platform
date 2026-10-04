@@ -1,0 +1,65 @@
+# Environment databases, from databases/<env>/ in this repo, into `shop`.
+#
+# Deliberately NOT part of the services' Applications: nothing that happens in
+# bo-deploy — a release, a rollback, a `git revert` — can prune a database,
+# whose PVCs CNPG garbage-collects with the Cluster (DECISIONS.md 2026-09-29).
+#
+# RETRY is load-bearing. On a cold rebuild this Application syncs before
+# cloudnative-pg-<env> has installed the `Cluster` CRD, and the sync fails on
+# the unknown kind. Automated sync never retries a failed sync of the same
+# commit on its own, so without `retry` the database would stay missing until
+# the next commit. With it, a retry succeeds once the CRD exists. catalog's
+# pods meanwhile wait on the not-yet-generated catalog-db-app Secret and start
+# when it appears (DECISIONS.md 2026-09-30).
+#
+# dev only for now; prod joins with the promoter slice.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: databases
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+    - matrix:
+        generators:
+          - clusters:
+              selector:
+                matchExpressions:
+                  - { key: env, operator: In, values: [dev] }
+          - git:
+              repoURL: https://github.com/bo-jr/bo-platform.git
+              revision: main
+              directories:
+                - path: "databases/{{ .metadata.labels.env }}"
+  template:
+    metadata:
+      name: "databases-{{ .metadata.labels.env }}"
+      labels:
+        env: "{{ .metadata.labels.env }}"
+        # Informational: after the CNPG operator (2), before the services (4).
+        wave: "3"
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/bo-jr/bo-platform.git
+        targetRevision: main
+        path: "{{ .path.path }}"
+        directory:
+          recurse: false
+      destination:
+        name: "{{ .name }}"
+        namespace: shop
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: -1          # unlimited: the CRD will arrive; keep asking
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m
